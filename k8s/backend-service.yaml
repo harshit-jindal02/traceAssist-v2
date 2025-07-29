@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: traceassist-backend
+  namespace: traceassist
+spec:
+  # Revert back to ClusterIP
+  type: ClusterIP
+  selector:
+    app: traceassist-backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http

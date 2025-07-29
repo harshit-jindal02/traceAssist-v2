@@ -1,0 +1,14 @@
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: traceassist-auto-instrumentation
+  namespace: traceassist
+spec:
+  exporter:
+    # Point to the in-cluster OpenTelemetry Collector service
+    # The format is <service-name>.<namespace>.svc.cluster.local:<port>
+    endpoint: "http://traceassist-collector.traceassist.svc.cluster.local:4317"
+  # Language-specific instrumentation remains the same
+  nodejs: {}
+  python: {}
+  java: {}

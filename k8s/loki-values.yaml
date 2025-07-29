@@ -1,0 +1,14 @@
+# This file provides custom configuration values for the Loki Helm chart.
+loki:
+  # By default, the Loki chart service might not have a standard HTTP port name.
+  # We are explicitly enabling it and giving it a predictable name.
+  service:
+    ports:
+      http: 3100
+
+# We don't need to deploy all the extra components for this setup.
+# Disabling these makes the installation faster and uses fewer resources.
+grafana:
+  enabled: false
+prometheus:
+  enabled: false

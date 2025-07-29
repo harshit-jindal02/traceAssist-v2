@@ -1,0 +1,11 @@
+ai-agent/.env
+backend/venv
+backend/.env
+user-apps/*
+ai-agent/venv
+ai-agent.log
+ai-agent/__pycache__/
+backend.log
+backend/__pycache__/
+utils/__pycache__/
+.env

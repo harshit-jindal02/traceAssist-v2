@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traceassist-backend
+  namespace: traceassist
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traceassist-backend
+  template:
+    metadata:
+      labels:
+        app: traceassist-backend
+    spec:
+      serviceAccountName: traceassist-sa
+      volumes:
+        - name: dockersock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+      containers:
+        - name: traceassist-backend
+          image: traceassist-backend:latest
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: dockersock
+              mountPath: /var/run/docker.sock
+          envFrom:
+            # Load database credentials from the secret
+            - secretRef:
+                name: postgres-secret
+          env:
+            - name: PAT_TOKEN
+              valueFrom:
+                secretKeyRef: 
+                  name: backend-secret
+                  key: PAT_TOKEN
+          ports:
+            - containerPort: 8000

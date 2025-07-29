@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: traceassist-frontend
+  namespace: traceassist
+spec:
+  # Revert back to ClusterIP, as it's more secure and all we need for port-forwarding
+  type: ClusterIP
+  selector:
+    app: traceassist-frontend
+  ports:
+    - port: 5173
+      targetPort: 5173

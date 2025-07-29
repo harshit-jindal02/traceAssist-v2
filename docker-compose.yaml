@@ -1,0 +1,31 @@
+version: '3.8'
+
+# This file defines the services needed for local development.
+# In this case, it's just our PostgreSQL database.
+services:
+  # This is the name of our service.
+  postgres:
+    # We use the official PostgreSQL image, version 14, on a lightweight Alpine Linux base.
+    image: postgres:14-alpine
+    # This gives the running container a friendly, predictable name.
+    container_name: traceassist-postgres
+    # These environment variables are used by the postgres image on its first run
+    # to initialize the database.
+    environment:
+      POSTGRES_USER: traceassist_user
+      POSTGRES_PASSWORD: your_strong_password
+      POSTGRES_DB: traceassist_db
+    # This maps port 5432 inside the container to port 5432 on your local machine,
+    # allowing you to connect to the database.
+    ports:
+      - "5432:5432"
+    # This creates a persistent volume named 'postgres_data'. It ensures that even if you
+    # stop and remove the container, your data will still be there when you start it again.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # This ensures the database container always restarts if it stops for any reason.
+    restart: always
+
+# This defines the named volume we referenced above.
+volumes:
+  postgres_data:
