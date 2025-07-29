@@ -23,15 +23,12 @@ from database.database import engine, get_db
 # Create database tables if they don't exist
 models.Base.metadata.create_all(bind=engine)
 
-# OpenTelemetry imports (assuming they are configured elsewhere)
-# ...
-
 load_dotenv()
 
 app = FastAPI(
     title="TraceAssist API",
     description="API for automating application observability in Kubernetes.",
-    version="2.0.0"
+    version="3.1.0"
 )
 
 # CORS Middleware to allow frontend access
@@ -137,11 +134,17 @@ def modify_kubernetes_manifest(yaml_content: str, app_id: str, image_name: str, 
 
 @app.post("/deployments", status_code=201)
 def create_deployment_entry(deployment: DeploymentCreate, db: Session = Depends(get_db)):
-    logger.info(f"Received request to create deployment '{deployment.deployment_name}'")
+    logger.info(f"Received request to create deployment record for '{deployment.deployment_name}'")
     db_deployment = crud.get_deployment_by_name(db, deployment_name=deployment.deployment_name)
     if db_deployment:
         raise HTTPException(status_code=409, detail=f"A deployment with the name '{deployment.deployment_name}' already exists.")
-    return crud.create_deployment(db=db, deployment_name=deployment.deployment_name, repo_url=deployment.repo_url, pat_token_provided=bool(deployment.pat_token))
+    return crud.create_deployment(
+        db=db,
+        deployment_name=deployment.deployment_name,
+        repo_url=deployment.repo_url,
+        pat_token_provided=bool(deployment.pat_token),
+        status="Created"
+    )
 
 @app.get("/deployments")
 def get_all_deployments(db: Session = Depends(get_db)):
@@ -164,7 +167,6 @@ async def instrument_and_deploy(deployment_name: str, req: InstrumentRequest, db
     app_dir = Path(BASE_DIR) / deployment_name
     
     try:
-        # --- 1. Clone ---
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Cloning")
         pat_token = req.pat_token
         effective_clone_url = db_deployment.repo_url
@@ -180,7 +182,6 @@ async def instrument_and_deploy(deployment_name: str, req: InstrumentRequest, db
         if app_dir.exists(): shutil.rmtree(app_dir)
         Repo.clone_from(effective_clone_url, str(app_dir))
 
-        # --- 2. Build ---
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Building")
         lang = detect_language(str(app_dir))
         dockerfile_path = find_first_file(app_dir, ["Dockerfile", "dockerfile"])
@@ -190,7 +191,6 @@ async def instrument_and_deploy(deployment_name: str, req: InstrumentRequest, db
         image_name = f"user-app-{deployment_name.lower()}:latest"
         subprocess.run(["docker", "build", "-t", image_name, "."], cwd=str(app_dir), check=True, capture_output=True, text=True)
 
-        # --- 3. Instrument & Deploy ---
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Deploying")
         search_dirs = [app_dir, app_dir / "k8s", app_dir / "deploy", app_dir / "manifests"]
         found_manifest_paths = [p for d in search_dirs if d.is_dir() for p in d.glob("*.yaml")] + [p for d in search_dirs if d.is_dir() for p in d.glob("*.yml")]
@@ -212,3 +212,43 @@ async def instrument_and_deploy(deployment_name: str, req: InstrumentRequest, db
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Failed")
         detail = e.stderr if hasattr(e, 'stderr') else str(e)
         raise HTTPException(status_code=500, detail=f"A step in the process failed: {detail[:1000]}...")
+
+@app.delete("/deployments/{deployment_name}")
+async def undeploy_application(deployment_name: str, db: Session = Depends(get_db)):
+    logger.info(f"Received request to undeploy and delete '{deployment_name}'")
+    db_deployment = crud.get_deployment_by_name(db, deployment_name=deployment_name)
+    if not db_deployment:
+        raise HTTPException(status_code=404, detail="Deployment not found.")
+
+    try:
+        crud.update_deployment_status(db, deployment_name=deployment_name, status="Undeploying")
+        
+        manifest_dir = Path(K8S_OUTPUT_DIR)
+        manifest_files = list(manifest_dir.glob(f"{deployment_name}-*.yaml"))
+
+        if not manifest_files:
+            logger.warning(f"No manifest files found for '{deployment_name}'. Cleaning up local files and DB record.")
+        else:
+            for file_path in manifest_files:
+                logger.info(f"Deleting resources from manifest: {file_path.name}")
+                subprocess.run(
+                    ["kubectl", "delete", "-f", str(file_path), "--ignore-not-found"],
+                    check=True, capture_output=True, text=True
+                )
+                os.remove(file_path)
+
+        app_dir = Path(BASE_DIR) / deployment_name
+        if app_dir.exists():
+            logger.info(f"Removing local repository cache: {app_dir}")
+            shutil.rmtree(app_dir)
+
+        logger.info(f"Deleting database record for '{deployment_name}'")
+        crud.delete_deployment_by_name(db, deployment_name=deployment_name)
+        
+        return {"message": f"Successfully undeployed and deleted record for '{deployment_name}'."}
+
+    except Exception as e:
+        logger.error(f"Failed to undeploy '{deployment_name}': {e}", exc_info=True)
+        crud.update_deployment_status(db, deployment_name=deployment_name, status="Undeploy Failed")
+        detail = e.stderr if hasattr(e, 'stderr') else str(e)
+        raise HTTPException(status_code=500, detail=f"An error occurred during undeployment: {detail}")

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import CreateDeploymentForm from './components/CreateDeploymentForm';
 import DeploymentDetail from './components/DeploymentDetail';
@@ -14,28 +14,38 @@ function App() {
   const [selectedDeployment, setSelectedDeployment] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const fetchDeployments = async () => {
+  // Use useCallback to create a stable function reference for fetching data
+  const fetchDeployments = useCallback(async () => {
     try {
+      setLoading(true);
       const response = await axios.get(`${backendUrl}/deployments`);
       setDeployments(response.data);
-    } catch (error) {
+    } catch (error) { // Corrected syntax here
       console.error("Failed to fetch deployments:", error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []); // The empty dependency array ensures this function is created only once
 
+  // Fetch deployments when the component first mounts
   useEffect(() => {
     fetchDeployments();
-  }, []);
+  }, [fetchDeployments]);
 
+  // Handler to refresh the list when a new deployment is created
   const handleDeploymentCreated = () => {
-    // Refresh the list of deployments after a new one is created
     fetchDeployments();
   };
   
+  // Handler to refresh the list when a deployment's status is updated
   const handleDeploymentUpdate = () => {
-    // Refresh the list to show new statuses
+    fetchDeployments();
+  };
+
+  // Handler for when a deployment is deleted
+  const handleDeploymentDeleted = () => {
+    // Clear the current selection and refresh the list
+    setSelectedDeployment('');
     fetchDeployments();
   };
 
@@ -139,6 +149,7 @@ function App() {
               backendUrl={backendUrl} 
               deploymentName={selectedDeployment}
               onDeploymentUpdate={handleDeploymentUpdate}
+              onDeploymentDeleted={handleDeploymentDeleted}
             />
           )}
         </Box>
