@@ -1,153 +1,112 @@
+# TraceAssist: Automated Observability for Kubernetes
 
-# 🚀 TraceAssist
+**TraceAssist is a powerful automation tool for SREs and DevOps engineers designed to dramatically simplify the process of instrumenting and deploying applications into a Kubernetes environment.**
 
-[![SigNoz](https://img.shields.io/badge/Observability-SigNoz-orange.svg)](https://signoz.io/)  
-[![OpenTelemetry](https://img.shields.io/badge/Telemetry-OpenTelemetry-lightgrey.svg)](https://opentelemetry.io/)
-
-**TraceAssist** is a Kubernetes-native observability helper that automatically instruments your Java, Node.js, or Python applications, ships traces, metrics & logs to SigNoz Cloud, and even suggests manual instrumentation via AI. All you do is point TraceAssist at your un-instrumented code (zip or GitHub repo) and hit **Instrument**—we handle the rest!
+Gone are the days of manually creating Dockerfiles, wrestling with Kubernetes manifests, and figuring out how to inject observability. TraceAssist takes your existing application source code from a Git repository, intelligently modifies its deployment configurations for auto-instrumentation with OpenTelemetry, and deploys it to a local Minikube cluster—all through a simple web interface.
 
 ---
 
-## 📋 Table of Contents
+## ✨ Core Features
 
-- [✨ Features](#✨-features)  
-- [🏗️ Architecture](#️-architecture)  
-- [⚙️ Prerequisites](#️-prerequisites)  
-- [🚀 Quick Start](#-quick-start)  
-  - [1. Clone & Configure](#1-clone--configure)  
-  - [2. Deploy to Minikube](#2-deploy-to-minikube)  
-  - [3. Instrument a User App](#3-instrument-a-user-app)  
-- [🛠️ Configuration](#️-configuration)  
-- [🧹 Cleanup](#️-cleanup)  
-- [🤝 Contributing](#️-contributing)  
-- [📄 License](#-license)  
+* **Git-Powered Workflow**: Simply provide a URL to a public or private GitHub repository.
+* **Bring Your Own Config**: Uses your application's own `Dockerfile` and `deployment.yaml` files, adapting to your existing setup.
+* **Intelligent Manifest Modification**: Automatically injects the necessary OpenTelemetry annotations and a `serviceAccountName` into your Kubernetes `Deployment` manifests for seamless instrumentation.
+* **Persistent Deployment History**: All deployment activities are logged in a PostgreSQL database, providing a complete history of instrumented applications directly in the UI.
+* **Local-First Environment**: Deploys everything to a local Minikube cluster, perfect for safe and rapid development and testing.
+* **Automated Setup & Cleanup**: Comes with simple `run.sh` and `cleanup.sh` scripts to build, deploy, and tear down the entire environment with single commands.
 
 ---
 
-## ✨ Features
+## 🛠️ Tech Stack
 
-- **Auto-Instrumentation** of Java / Node.js / Python apps via the OTel Operator  
-- **AI-Driven Suggestions** for manual instrumentation (powered by OpenAI)  
-- **Traces & Metrics → SigNoz Cloud** using OTLP sidecars  
-- **Logs Tailored** via Collector DaemonSet & `filelog` receiver  
-- **Host & Node Metrics** (CPU, memory, filesystem, network, load)  
-- **One-Click Cleanup** script to tear down all resources  
-
----
-
-## 🏗️ Architecture
-
-```
-User App (zip / Git Repo)
-│
-▼
-TraceAssist Backend ──► Kubernetes Manifests (deployment+service .yaml)
-│
-├── OpenTelemetry Operator (auto-inject sidecars)
-│
-└── Collector DaemonSet
-    ├─ Receivers: OTLP, filelog, hostmetrics
-    ├─ Processors: batch
-    └─ Exporter: OTLP → SigNoz Cloud
-```
-
-- **Backend**: FastAPI service that clones or uploads code, renders Jinja2 K8s templates, invokes `kubectl apply`, calls OpenAI.  
-- **Operator + Instrumentation CR**: Auto-injects the correct OTel SDK for each runtime.  
-- **Collector DaemonSet**: Runs on each node (hostNetwork), tails container logs, scrapes infra metrics, and exports everything to SigNoz.
+* **Frontend**: React, Material-UI, Axios
+* **Backend**: Python 3.10, FastAPI, SQLAlchemy
+* **Database**: PostgreSQL
+* **Orchestration**: Kubernetes (Minikube), Docker, Docker Compose
+* **Observability**: OpenTelemetry Operator
 
 ---
 
-## ⚙️ Prerequisites
+## ⚙️ How It Works
 
-- [Minikube](https://minikube.sigs.k8s.io/docs/) (with Docker driver)  
-- `kubectl` CLI  
-- `helm` CLI  
-- Docker (local)  
-- SigNoz Cloud account & **Ingestion Key**  
-- OpenAI API Key (for AI suggestions)  
+TraceAssist follows a simple, automated workflow:
 
----
-
-## 🚀 Quick Start
-
-### 1. Clone & Configure
-
-```bash
-git clone https://github.com/harshit-jindal02/traceAssist.git
-cd traceAssist
-cp .env.sample .env
-# Edit .env:
-#   OPENAI_API_KEY=sk-…
-#   SIGNOZ_CLOUD_ENDPOINT=ingest.signoz.cloud:4317
-#   SIGNOZ_CLOUD_API_KEY=<YOUR_SIGNOZ_INGESTION_KEY>
-```
-
-### 2. Deploy to Minikube
-
-```bash
-chmod +x ./run.sh
-eval "$(minikube docker-env)"
-./run.sh
-```
-
-This will:
-- Build your backend, AI-agent & frontend images
-- Install SigNoz (Helm chart) in `signoz` ns
-- Install cert-manager & OTel Operator
-- Apply your Collector DaemonSet and Instrumentation CR
-- Deploy TraceAssist services in `traceassist` ns
-
-### 3. Instrument a User App
-
-1. Visit: `http://localhost:5173` (TraceAssist UI)
-2. **Upload Zip** or **Clone GitHub Repo** (e.g. `https://github.com/heroku/node-js-getting-started.git`)
-3. Click **Instrument** → watch your app deploy in `traceassist` ns
-4. Visit **SigNoz** dashboard (logs / metrics / traces)
+1.  **Input**: A user provides a Git repository URL, a unique deployment name, and an optional GitHub PAT for private repos.
+2.  **Clone & Record**: The backend clones the repository and creates a record of the deployment in the PostgreSQL database.
+3.  **Build**: It finds the `Dockerfile` in the user's repo and builds a new Docker image, tagging it with the unique deployment name.
+4.  **Analyze & Modify**: The backend locates the Kubernetes manifest files (`*.yaml`) in the repository. It intelligently parses these files to:
+    * Rename the `Deployment` and `Service` resources to match the user's unique deployment name.
+    * Update all necessary labels and selectors.
+    * Inject the correct Docker image name and set `imagePullPolicy: Never`.
+    * Inject the `serviceAccountName: traceassist-sa` for RBAC permissions.
+    * Inject the OpenTelemetry annotations (`instrumentation.opentelemetry.io/inject: "true"`) into the pod template.
+5.  **Deploy**: The modified manifests are applied to the `traceassist` namespace in the Minikube cluster.
+6.  **Instrument**: The OpenTelemetry Operator detects the annotations and automatically injects the instrumentation sidecar into the application's pods as they start.
 
 ---
 
-## 🛠️ Configuration
+## 🚀 Getting Started
 
-| Component              | File                                | Purpose                                        |
-|------------------------|-------------------------------------|------------------------------------------------|
-| AI Suggestions         | backend/.env                        | OPENAI_API_KEY                                 |
-| SigNoz Exporter        | run.sh & Deployment YAMLs           | SIGNOZ_CLOUD_ENDPOINT & SIGNOZ_CLOUD_API_KEY   |
-| Collector Config       | k8s/otel-collector-config.yaml      | Receivers, processors, exporters (logs+infra)  |
-| Collector DaemonSet    | k8s/otel-collector-daemonset.yaml   | Mount hostFS, docker logs, privileged mode     |
-| Instrumentation CR     | k8s/instrumentation.yaml            | Auto-inject SDK sidecars                       |
+Follow these steps to get TraceAssist running on your local machine.
 
-Adjust resource requests/limits, scrape intervals, and file patterns as needed.
+### Prerequisites
+
+Ensure you have the following tools installed:
+* Docker & Docker Compose
+* Minikube
+* `kubectl` (Kubernetes CLI)
+* Helm (Kubernetes Package Manager)
+
+### Setup Instructions
+
+1.  **Clone the Repository**
+    ```bash
+    git clone <your-repo-url>
+    cd traceAssist
+    ```
+
+2.  **Start the Local PostgreSQL Database**
+    This command will start a PostgreSQL container in the background.
+    ```bash
+    docker-compose up -d
+    ```
+
+3.  **Configure Secrets**
+    You need to provide credentials for your database and GitHub.
+    * **PostgreSQL**: Open `k8s/postgres-secret.yaml` and ensure the `DATABASE_URL` matches the credentials in your `docker-compose.yaml` file. For Docker Desktop on Mac/Windows, `host.docker.internal` is the correct hostname.
+        ```yaml
+        # k8s/postgres-secret.yaml
+        stringData:
+          DATABASE_URL: "postgresql://traceassist_user:your_strong_password@host.docker.internal:5432/traceassist_db"
+        ```
+    * **GitHub PAT**: Open `k8s/backend-secret.yaml` and paste your GitHub Personal Access Token. This is required for cloning private repositories and avoiding rate limits on public ones.
+        ```yaml
+        # k8s/backend-secret.yaml
+        stringData:
+          PAT_TOKEN: "<your_github_pat>"
+        ```
+
+4.  **Run the Deployment Script**
+    This script will build all the necessary images, set up the Kubernetes cluster, and deploy TraceAssist.
+    ```bash
+    ./run.sh
+    ```
+
+5.  **Access the Application**
+    Once the script finishes, it will provide the URL to access the TraceAssist UI.
+    ```
+    ✅ All components are up and port-forwarding is active.
+    🔗 Access the TraceAssist UI at:
+       http://localhost:5173
+    ```
+    Open `http://localhost:5173` in your browser to start using the application.
 
 ---
 
 ## 🧹 Cleanup
 
+To stop the application and remove all created resources (Kubernetes deployments, Docker images, etc.), simply run the cleanup script:
+
 ```bash
-chmod +x ./cleanup.sh
 ./cleanup.sh
-```
-
-This will:
-- Stop lingering `kubectl port-forward`
-- Delete all k8s resources & namespaces
-- Uninstall Helm releases (`signoz`, `opentelemetry-operator`, `cert-manager`)
-- Remove OTel Collector DaemonSet & ConfigMap
-- Prune built Docker images in Minikube
-- Remove local `k8s/` manifests & `user-apps/` directory
-
----
-
-## 🤝 Contributing
-
-- Fork the repo and create your feature branch
-- Write code, tests & update documentation
-- Submit a pull request — we’ll review & merge!
-
-Please follow the Contributor Covenant and our code style guidelines.
-
----
-
-
-Made by Harshit Jindal.
-Empowering developers to instrument in one click!
-# traceAssist-v2
+To stop the PostgreSQL container, run:docker-compose down
