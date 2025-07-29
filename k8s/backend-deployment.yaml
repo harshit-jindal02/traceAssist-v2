@@ -30,11 +30,7 @@ spec:
             # Load database credentials from the secret
             - secretRef:
                 name: postgres-secret
-          env:
-            - name: PAT_TOKEN
-              valueFrom:
-                secretKeyRef: 
-                  name: backend-secret
-                  key: PAT_TOKEN
+                optional: true 
+          # The PAT_TOKEN env var is no longer needed here
           ports:
             - containerPort: 8000

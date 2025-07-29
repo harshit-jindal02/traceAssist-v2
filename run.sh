@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ─── 1. Start Minikube ─────────────────────────────────────────────────────────
 echo "🚀 Starting Minikube..."
-# minikube delete && minikube start --memory=8192 --cpus=4
+minikube delete && minikube start --memory=7900 --cpus=4
 
 # ─── 2. Point Docker to Minikube’s daemon ──────────────────────────────────────
 echo "🔧 Configuring Docker to use Minikube..."
@@ -31,17 +31,17 @@ echo "⏳ Waiting for cert-manager webhook to be ready..."
 kubectl -n cert-manager rollout status deployment cert-manager-webhook --timeout=2m
 
 # ─── 6. Install Observability Stack via Helm ───────────────────────────────────
-echo "📊 Installing Grafana..."
-helm install grafana grafana/grafana -n grafana --set adminPassword='prom-operator' --wait
+# echo "📊 Installing Grafana..."
+# helm install grafana grafana/grafana -n grafana --set adminPassword='prom-operator' --wait
 
-echo "📜 Installing Loki for logs with custom values..."
-helm install loki-stack grafana/loki-stack -n loki -f k8s/loki-values.yaml --wait
+# echo "📜 Installing Loki for logs with custom values..."
+# helm install loki-stack grafana/loki-stack -n loki -f k8s/loki-values.yaml --wait
 
-echo "⏱️ Installing Prometheus for metrics..."
-helm install prometheus prometheus-community/prometheus -n prometheus --wait
+# echo "⏱️ Installing Prometheus for metrics..."
+# helm install prometheus prometheus-community/prometheus -n prometheus --wait
 
-echo "🔍 Installing Jaeger for traces..."
-helm install jaeger jaegertracing/jaeger -n jaeger --wait
+# echo "🔍 Installing Jaeger for traces..."
+# helm install jaeger jaegertracing/jaeger -n jaeger --wait
 
 # ─── 7. Install the OpenTelemetry Operator ────────────────────────────────────
 echo "🔧 Installing OpenTelemetry Operator..."
@@ -54,7 +54,6 @@ helm upgrade --install \
 echo "🚀 Deploying TraceAssist application components..."
 kubectl -n traceassist apply \
   -f k8s/postgres-secret.yaml \
-  -f k8s/backend-secret.yaml \
   -f k8s/traceassist-rbac.yaml \
   -f k8s/otel-collector-config.yaml \
   -f k8s/otel-collector-deployment.yaml \
