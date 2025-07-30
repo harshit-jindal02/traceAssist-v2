@@ -1,13 +1,15 @@
 from sqlalchemy.orm import Session
 from . import models
 
+def get_deployment_by_id(db: Session, deployment_id: int):
+    return db.query(models.Deployment).filter(models.Deployment.id == deployment_id).first()
+
 def get_deployment_by_name(db: Session, deployment_name: str):
     return db.query(models.Deployment).filter(models.Deployment.deployment_name == deployment_name).first()
 
 def get_deployments(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.Deployment).order_by(models.Deployment.created_at.desc()).offset(skip).limit(limit).all()
 
-# --- UPDATED: Function now saves encrypted token and language ---
 def create_deployment(db: Session, deployment_name: str, repo_url: str, encrypted_pat_token: str | None, language: str, status: str = "Created"):
     db_deployment = models.Deployment(
         deployment_name=deployment_name,
@@ -19,6 +21,18 @@ def create_deployment(db: Session, deployment_name: str, repo_url: str, encrypte
     db.add(db_deployment)
     db.commit()
     db.refresh(db_deployment)
+    return db_deployment
+
+def update_deployment_config(db: Session, deployment_id: int, status: str, push_enabled: bool = None, encrypted_pat_token: str = None):
+    db_deployment = get_deployment_by_id(db, deployment_id)
+    if db_deployment:
+        db_deployment.status = status
+        if push_enabled is not None:
+            db_deployment.push_enabled = push_enabled
+        if encrypted_pat_token:
+            db_deployment.encrypted_pat_token = encrypted_pat_token
+        db.commit()
+        db.refresh(db_deployment)
     return db_deployment
 
 def update_deployment_status(db: Session, deployment_name: str, status: str):

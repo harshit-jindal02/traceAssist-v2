@@ -9,10 +9,10 @@ class Deployment(Base):
     deployment_name = Column(String, unique=True, index=True, nullable=False)
     repo_url = Column(String, nullable=False)
     
-    # --- NEW: Store the encrypted token and detected language ---
-    encrypted_pat_token = Column(String, nullable=True) # Store the encrypted token, not the hash
-    language = Column(String, nullable=True) # Store the detected language
+    # Reverted: Store the encrypted token and detected language
+    encrypted_pat_token = Column(String, nullable=True) 
+    language = Column(String, nullable=True) 
     
-    status = Column(String, default="Created")
+    status = Column(String, default="Created") # Reverted to simpler initial status
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_updated = Column(DateTime(timezone=True), onupdate=func.now())
