@@ -132,10 +132,17 @@ def find_first_file(directory: Path, patterns: list):
     return None
 
 def modify_kubernetes_manifest(yaml_content: str, app_id: str, image_name: str, language: str):
+    """
+    Modifies Kubernetes manifests for TraceAssist deployment.
+    Returns the modified content and flags indicating if any changes were made,
+    and specifically if instrumentation changes were made.
+    """
     try:
         docs = list(yaml.safe_load_all(yaml_content))
         modified_docs = []
-        changes_made = False
+        any_changes_made = False
+        instrumentation_changes_made = False  # Flag for instrumentation-specific changes
+
         for doc in docs:
             if not isinstance(doc, dict):
                 modified_docs.append(doc)
@@ -145,58 +152,63 @@ def modify_kubernetes_manifest(yaml_content: str, app_id: str, image_name: str, 
             original_app_label = doc.get('metadata', {}).get('labels', {}).get('app')
 
             if kind == "Deployment":
+                # --- Structural Changes (do not trigger a push) ---
                 if doc['metadata'].get('name') != f"{app_id}-deployment":
                     doc['metadata']['name'] = f"{app_id}-deployment"
-                    changes_made = True
+                    any_changes_made = True
 
                 labels = doc['metadata'].setdefault('labels', {})
                 if labels.get('app') != app_id:
                     labels['app'] = app_id
-                    changes_made = True
+                    any_changes_made = True
                 
                 spec = doc.setdefault('spec', {})
                 if spec.setdefault('selector', {}).setdefault('matchLabels', {}).get('app') != app_id:
                     spec['selector']['matchLabels']['app'] = app_id
-                    changes_made = True
+                    any_changes_made = True
 
                 template = spec.setdefault('template', {})
                 if template.setdefault('metadata', {}).setdefault('labels', {}).get('app') != app_id:
                     template['metadata']['labels']['app'] = app_id
-                    changes_made = True
-                
-                annotations = template.setdefault('metadata', {}).setdefault('annotations', {})
-                if annotations.get("instrumentation.opentelemetry.io/inject") != "true":
-                    annotations["instrumentation.opentelemetry.io/inject"] = "true"
-                    changes_made = True
-
-                if language != "unknown" and annotations.get(f"instrumentation.opentelemetry.io/inject-{language}") != "true":
-                     annotations[f"instrumentation.opentelemetry.io/inject-{language}"] = "true"
-                     changes_made = True
+                    any_changes_made = True
                 
                 pod_spec = template.setdefault('spec', {})
-                if pod_spec.get('serviceAccountName') != 'traceassist-sa':
-                    pod_spec['serviceAccountName'] = 'traceassist-sa'
-                    changes_made = True
-                
                 containers = pod_spec.setdefault('containers', [])
                 if containers:
                     container_to_modify = next((c for c in containers if c.get('name') == original_app_label), containers[0])
                     if container_to_modify.get('image') != image_name:
                         container_to_modify['image'] = image_name
-                        changes_made = True
+                        any_changes_made = True
                     if container_to_modify.get('imagePullPolicy') != 'Never':
                         container_to_modify['imagePullPolicy'] = 'Never'
-                        changes_made = True
+                        any_changes_made = True
+
+                # --- Instrumentation Changes (WILL trigger a push) ---
+                annotations = template.setdefault('metadata', {}).setdefault('annotations', {})
+                if annotations.get("instrumentation.opentelemetry.io/inject") != "true":
+                    annotations["instrumentation.opentelemetry.io/inject"] = "true"
+                    any_changes_made = True
+                    instrumentation_changes_made = True
+
+                if language != "unknown" and annotations.get(f"instrumentation.opentelemetry.io/inject-{language}") != "true":
+                     annotations[f"instrumentation.opentelemetry.io/inject-{language}"] = "true"
+                     any_changes_made = True
+                     instrumentation_changes_made = True
+                
+                if pod_spec.get('serviceAccountName') != 'traceassist-sa':
+                    pod_spec['serviceAccountName'] = 'traceassist-sa'
+                    any_changes_made = True
+                    instrumentation_changes_made = True
 
             elif kind == "Service":
                 spec = doc.setdefault('spec', {})
                 if spec.setdefault('selector', {}).get('app') != app_id:
                     spec['selector']['app'] = app_id
-                    changes_made = True
+                    any_changes_made = True
             
             modified_docs.append(doc)
 
-        return yaml.dump_all(modified_docs, sort_keys=False), changes_made
+        return yaml.dump_all(modified_docs, sort_keys=False), any_changes_made, instrumentation_changes_made
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to modify Kubernetes manifest: {e}")
@@ -215,8 +227,8 @@ async def analyze_repository(request: AnalyzeRequest):
             manifest_path = find_first_file(Path(temp_dir), ["k8s/*.yaml", "deploy/*.yaml", "*.yaml"])
             push_required = False
             if manifest_path:
-                _, changes_needed = modify_kubernetes_manifest(manifest_path.read_text(), "temp-check", "temp-check", language)
-                if changes_needed:
+                _, _, instrumentation_changes_needed = modify_kubernetes_manifest(manifest_path.read_text(), "temp-check", "temp-check", language)
+                if instrumentation_changes_needed:
                     push_required = True
     except GitCommandError:
         is_public = False
@@ -347,25 +359,27 @@ async def instrument_and_deploy(deployment_name: str, db: Session = Depends(get_
         if not found_manifest_paths:
             raise HTTPException(status_code=404, detail="No Kubernetes YAML manifests found.")
         
-        manifests_changed = False
+        push_required = False
+        
         for manifest_path in found_manifest_paths:
             original_content = manifest_path.read_text()
-            modified_content, changes_made = modify_kubernetes_manifest(original_content, deployment_name, image_name, language)
+            modified_content, any_changes_made, instrumentation_changes_made = modify_kubernetes_manifest(original_content, deployment_name, image_name, language)
             
-            if changes_made:
-                manifests_changed = True
+            if any_changes_made:
                 manifest_path.write_text(modified_content)
+            
+            if instrumentation_changes_made:
+                push_required = True
 
-        if manifests_changed and pat_token:
+        if push_required and pat_token:
             crud.update_deployment_status(db, deployment_name=deployment_name, status="Pushing manifest changes to Git...")
             repo.git.add(all=True)
             repo.index.commit("feat: Add OpenTelemetry instrumentation by TraceAssist")
             repo.remotes.origin.push()
-        elif manifests_changed and not pat_token:
-            crud.update_deployment_status(db, deployment_name=deployment_name, status="Proceeding without pushing changes to Git.")
-        else:
+        elif not push_required:
             crud.update_deployment_status(db, deployment_name=deployment_name, status="Manifests already instrumented.")
-
+        elif push_required and not pat_token:
+            crud.update_deployment_status(db, deployment_name=deployment_name, status="Proceeding without pushing changes to Git.")
 
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Deploying to Kubernetes...")
         for manifest_path in found_manifest_paths:
