@@ -26,11 +26,19 @@ spec:
           volumeMounts:
             - name: dockersock
               mountPath: /var/run/docker.sock
-          envFrom:
-            # Load database credentials from the secret
-            - secretRef:
-                name: postgres-secret
-                optional: true 
-          # The PAT_TOKEN env var is no longer needed here
+          env:
+            # --- UPDATED: Load both DATABASE_URL and the new ENCRYPTION_KEY ---
+            # The backend application will use these environment variables to connect to the
+            # database and to encrypt/decrypt PAT tokens.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: DATABASE_URL
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: ENCRYPTION_KEY
           ports:
             - containerPort: 8000

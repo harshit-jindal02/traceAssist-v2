@@ -12,14 +12,14 @@ data:
           http:
 
     exporters:
-      # --- FIX: Point to our new, stable loki-service ---
-      loki:
-        endpoint: "http://loki-service.loki.svc.cluster.local:3100/loki/api/v1/push"
-        tls:
-          insecure: true
+      # # --- FIX: Point to our new, stable loki-service ---
+      # loki:
+      #   endpoint: "http://loki-service.loki.svc.cluster.local:3100/loki/api/v1/push"
+      #   tls:
+      #     insecure: true
 
       otlp/jaeger:
-        endpoint: "jaeger-collector.jaeger.svc.cluster.local:4317"
+        endpoint: "http://jaeger-collector.jaeger.svc.cluster.local:4317"
         tls:
           insecure: true
       
@@ -41,7 +41,7 @@ data:
           receivers: [otlp]
           processors: [batch]
           exporters: [prometheusremotewrite]
-        logs:
-          receivers: [otlp]
-          processors: [batch]
-          exporters: [loki]
+        # logs:
+        #   receivers: [otlp]
+        #   processors: [batch]
+        #   exporters: [loki]

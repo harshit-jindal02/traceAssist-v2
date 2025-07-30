@@ -4,7 +4,7 @@ import {
   Grid, Card, CardContent, Chip, LinearProgress, Dialog,
   DialogActions, DialogContent, DialogContentText, DialogTitle, TextField, Divider, ButtonGroup, IconButton
 } from '@mui/material';
-import { VpnKey, Link as LinkIcon, CheckCircle, Error, HourglassEmpty, RocketLaunch, Update, Schedule, Delete, Refresh } from '@mui/icons-material';
+import { VpnKey, Link as LinkIcon, CheckCircle, Error, HourglassEmpty, RocketLaunch, Update, Schedule, Delete, Refresh, Language } from '@mui/icons-material';
 import axios from 'axios';
 
 export default function DeploymentDetail({ backendUrl, deploymentName, onDeploymentUpdate, onDeploymentDeleted }) {
@@ -13,11 +13,9 @@ export default function DeploymentDetail({ backendUrl, deploymentName, onDeploym
   const [error, setError] = useState('');
   const [actionInProgress, setActionInProgress] = useState(false);
   
-  const [isPatModalOpen, setIsPatModalOpen] = useState(false);
-  const [tempPatToken, setTempPatToken] = useState('');
   const [isUndeployModalOpen, setIsUndeployModalOpen] = useState(false);
 
-  // Wrap fetchDetails in useCallback for a stable function reference
+  // Wrap fetchDetails in useCallback for a stable function reference that doesn't change on re-renders
   const fetchDetails = useCallback(async () => {
     if (!deploymentName) return;
     try {
@@ -28,38 +26,31 @@ export default function DeploymentDetail({ backendUrl, deploymentName, onDeploym
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to fetch deployment details.');
       if (err.response?.status === 404) {
-          onDeploymentDeleted();
+          onDeploymentDeleted(); // Callback to parent if the resource is gone
       }
     } finally {
       setLoading(false);
     }
   }, [deploymentName, backendUrl, onDeploymentDeleted]);
 
+  // Fetch details when the component mounts or when the selected deployment changes
   useEffect(() => {
     fetchDetails();
-  }, [fetchDetails]); // useEffect will run when fetchDetails changes (which is only once)
+  }, [fetchDetails]);
 
-  const handleInstrumentClick = () => {
-    if (details?.pat_token_provided) {
-      setIsPatModalOpen(true);
-    } else {
-      executeInstrument();
-    }
-  };
-
-  const executeInstrument = async (token = null) => {
+  // This is the simplified handler that no longer needs a PAT modal
+  const handleInstrumentClick = async () => {
     setActionInProgress(true);
     setError('');
-    setIsPatModalOpen(false);
     try {
-      await axios.post(`${backendUrl}/deployments/${deploymentName}/instrument`, { pat_token: token });
-      await fetchDetails(); // Refresh details after action
-      onDeploymentUpdate();
+      // The request body is empty because the backend already has the encrypted token
+      await axios.post(`${backendUrl}/deployments/${deploymentName}/instrument`);
+      await fetchDetails(); // Manually refresh details after the action
+      onDeploymentUpdate(); // Notify the parent component to refresh its list
     } catch (err) {
       setError(err.response?.data?.detail || 'Instrumentation failed.');
     } finally {
       setActionInProgress(false);
-      setTempPatToken('');
     }
   };
 
@@ -69,7 +60,7 @@ export default function DeploymentDetail({ backendUrl, deploymentName, onDeploym
     setIsUndeployModalOpen(false);
     try {
       await axios.delete(`${backendUrl}/deployments/${deploymentName}`);
-      onDeploymentDeleted();
+      onDeploymentDeleted(); // Notify parent to clear selection and refresh list
     } catch (err) {
       setError(err.response?.data?.detail || 'Undeploy failed.');
     } finally {
@@ -99,7 +90,6 @@ export default function DeploymentDetail({ backendUrl, deploymentName, onDeploym
     <>
       <Paper elevation={3} sx={{ p: 3, borderRadius: 2, width: '100%', borderTop: `4px solid`, borderColor: `${statusInfo.color}.main`, position: 'relative' }}>
         
-        {/* --- NEW: Refresh Button --- */}
         <IconButton 
           onClick={fetchDetails} 
           disabled={loading || actionInProgress}
@@ -121,10 +111,15 @@ export default function DeploymentDetail({ backendUrl, deploymentName, onDeploym
                 <strong>Repository URL:</strong>
                 <Typography variant="body2" component="a" href={details.repo_url} target="_blank" rel="noopener noreferrer">{details.repo_url}</Typography>
               </Typography>
-              <Typography sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <VpnKey color="action" />
+              <Typography sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                <VpnKey color="action" /> 
                 <strong>PAT Required:</strong> 
-                <Chip label={details.pat_token_provided ? "Yes" : "No"} color={details.pat_token_provided ? "info" : "default"} size="small" />
+                <Chip label={details.encrypted_pat_token ? "Yes" : "No"} color={details.encrypted_pat_token ? "info" : "default"} size="small" />
+              </Typography>
+              <Typography sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Language color="action" />
+                <strong>Detected Language:</strong> 
+                <Chip label={details.language || "Unknown"} color="primary" variant="outlined" size="small" />
               </Typography>
             </CardContent></Card>
           </Grid>
@@ -163,22 +158,10 @@ export default function DeploymentDetail({ backendUrl, deploymentName, onDeploym
         {actionInProgress && <LinearProgress color="secondary" sx={{ mt: 2 }} />}
       </Paper>
 
-      <Dialog open={isPatModalOpen} onClose={() => setIsPatModalOpen(false)}>
-        <DialogTitle>Confirm Private Repository Access</DialogTitle>
-        <DialogContent>
-          <DialogContentText>This deployment requires a GitHub PAT. Please re-enter your token to proceed.</DialogContentText>
-          <TextField autoFocus margin="dense" label="GitHub PAT" type="password" fullWidth variant="standard" value={tempPatToken} onChange={(e) => setTempPatToken(e.target.value)} />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setIsPatModalOpen(false)}>Cancel</Button>
-          <Button onClick={() => executeInstrument(tempPatToken)} variant="contained">Confirm & Deploy</Button>
-        </DialogActions>
-      </Dialog>
-
       <Dialog open={isUndeployModalOpen} onClose={() => setIsUndeployModalOpen(false)}>
         <DialogTitle>Confirm Undeploy</DialogTitle>
         <DialogContent>
-          <DialogContentText>Are you sure you want to undeploy "{deploymentName}"? This will delete the application from Kubernetes.</DialogContentText>
+          <DialogContentText>Are you sure you want to undeploy "{deploymentName}"? This will delete the application from Kubernetes and remove its record.</DialogContentText>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setIsUndeployModalOpen(false)}>Cancel</Button>

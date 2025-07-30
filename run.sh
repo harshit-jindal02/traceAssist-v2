@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ─── 1. Start Minikube ─────────────────────────────────────────────────────────
 echo "🚀 Starting Minikube..."
-# minikube delete && minikube start --memory=7900 --cpus=4
+minikube delete && minikube start --memory=7900 --cpus=4
 
 # ─── 2. Point Docker to Minikube’s daemon ──────────────────────────────────────
 echo "🔧 Configuring Docker to use Minikube..."
