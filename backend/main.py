@@ -243,27 +243,48 @@ async def create_deployment_final(deployment: DeploymentCreate, db: Session = De
     if crud.get_deployment_by_name(db, deployment_name=deployment.deployment_name):
         raise HTTPException(status_code=409, detail="A deployment with this name already exists.")
 
-    if deployment.pat_token:
-        if not await verify_pat(deployment.pat_token):
-            raise HTTPException(status_code=400, detail="The provided GitHub PAT is invalid or expired.")
-        if not check_push_permissions(deployment.repo_url, deployment.pat_token):
-             raise HTTPException(status_code=403, detail="The provided PAT token does not have push permissions for this repository.")
-    
+    # --- NEW LOGIC: Re-analyze the repo to determine if a PAT is actually needed ---
+    push_required = True
+    is_public = False
     language = "unknown"
-    with tempfile.TemporaryDirectory() as temp_dir:
-        try:
-            clone_url = deployment.repo_url
-            if deployment.pat_token:
-                parsed_url = urlparse(clone_url)
-                netloc_with_token = f"{quote(deployment.pat_token, safe='')}@{parsed_url.hostname}"
-                clone_url = urlunparse((parsed_url.scheme, netloc_with_token, parsed_url.path, "", "", ""))
-            
-            Repo.clone_from(clone_url, temp_dir, depth=1)
-            language = detect_language(temp_dir)
-        except GitCommandError:
-            raise HTTPException(status_code=400, detail="Failed to clone repository. If it's private, a valid PAT token is required.")
 
-    encrypted_token_str = fernet.encrypt(deployment.pat_token.encode()).decode() if deployment.pat_token else None
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Repo.clone_from(deployment.repo_url, temp_dir, depth=1)
+            is_public = True
+            language = detect_language(temp_dir)
+            manifest_path = find_first_file(Path(temp_dir), ["k8s/*.yaml", "deploy/*.yaml", "*.yaml"])
+            
+            if manifest_path:
+                _, _, instrumentation_changes_needed = modify_kubernetes_manifest(manifest_path.read_text(), "temp-check", "temp-check", language)
+                if not instrumentation_changes_needed:
+                    push_required = False
+            else:
+                push_required = False 
+
+    except GitCommandError:
+        is_public = False
+        push_required = True
+
+    # --- NEW LOGIC: Conditionally validate and use the PAT ---
+    final_pat_token = deployment.pat_token
+    
+    if is_public and not push_required:
+        # If it's a public repo and no changes are needed, ignore any provided token.
+        final_pat_token = None
+    elif final_pat_token: # Only validate if a token is provided and it might be needed
+        if not await verify_pat(final_pat_token):
+            raise HTTPException(status_code=400, detail="The provided GitHub PAT is invalid or expired.")
+        if not check_push_permissions(deployment.repo_url, final_pat_token):
+             raise HTTPException(status_code=403, detail="The provided PAT token does not have push permissions for this repository.")
+    elif not is_public and not final_pat_token:
+        # Private repo but no token provided
+        raise HTTPException(status_code=400, detail="This is a private repository. A valid PAT token is required.")
+    
+    # We already detected the language, so no need to clone again.
+    # If cloning failed above, it would have raised an exception.
+
+    encrypted_token_str = fernet.encrypt(final_pat_token.encode()).decode() if final_pat_token else None
 
     db_deployment = crud.create_deployment(
         db=db,

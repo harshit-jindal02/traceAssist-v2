@@ -40,17 +40,18 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
       const analysis = response.data;
       setAnalysisResult(analysis);
 
-      // If it's a private repo, it needs a token.
+      // Case 1: Private repo, requires a token.
       if (!analysis.is_public && !patToken) {
-        setError("The link is invalid or this is a private repository. A PAT token is required.");
+        setError("This is a private repository. A PAT token is required.");
         return;
       }
       
-      // If a push is required for a public repo, open the confirmation modal.
+      // Case 2: Public repo, but needs changes. Open confirmation modal.
       if (analysis.is_public && analysis.push_required) {
         setConfirmModalOpen(true);
       } else {
-        // Otherwise, proceed to create the deployment directly.
+        // Case 3: Public repo with no changes needed, OR private repo with token already provided.
+        // The backend will ignore the PAT for the public/no-changes case.
         handleFinalSubmit();
       }
 
@@ -111,7 +112,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
           />
           <TextField
             type={showPatToken ? 'text' : 'password'}
-            label="GitHub PAT (Optional)"
+            label="GitHub PAT (Optional for public repos)"
             value={patToken}
             onChange={(e) => setPatToken(e.target.value)}
             fullWidth
@@ -129,6 +130,11 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
           
           {error && <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert>}
           {success && <Alert severity="success" sx={{ mt: 1 }}>{success}</Alert>}
+          {analysisResult && analysisResult.is_public && !analysisResult.push_required && (
+            <Alert severity="info" sx={{ mt: 1 }}>
+              This public repository's manifests are already instrumented. No PAT token is required to proceed.
+            </Alert>
+          )}
 
           <Button
             type="submit"
@@ -147,7 +153,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
         <DialogTitle>Confirm Push Permissions</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
-            This public repository's manifests need updates. To save these changes to Git,
+            This public repository's manifests need updates for instrumentation. To save these changes to your Git repository,
             please provide a PAT token with push permissions.
           </DialogContentText>
           <TextField
