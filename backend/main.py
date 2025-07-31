@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import logging
 import re
+import json
 from urllib.parse import urlparse, urlunparse, quote
 from pathlib import Path
 import httpx
@@ -47,6 +48,11 @@ logger = logging.getLogger(__name__)
 BASE_DIR = "user-apps"
 K8S_OUTPUT_DIR = "k8s-generated"
 
+# FIX: Corrected the in-cluster Grafana URL to use the correct namespace ('grafana') and port (80)
+GRAFANA_API_URL = os.getenv("GRAFANA_API_URL", "http://grafana.grafana.svc.cluster.local:80")
+GRAFANA_PUBLIC_URL = os.getenv("GRAFANA_PUBLIC_URL", "http://localhost:3000") # This remains the same for the user's browser
+GRAFANA_API_TOKEN = os.getenv("GRAFANA_API_TOKEN", "")
+
 # Ensure directories exist at startup
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(K8S_OUTPUT_DIR, exist_ok=True)
@@ -60,7 +66,8 @@ class DeploymentBase(BaseModel):
     encrypted_pat_token: Optional[str] = None
     created_at: datetime
     last_updated: Optional[datetime] = None
-    push_enabled: bool = True # FIX: Added with default value
+    push_enabled: bool = True
+    grafana_panel_links: Optional[str] = None
 
 class Deployment(DeploymentBase):
     id: int
@@ -192,44 +199,118 @@ def modify_kubernetes_manifest(yaml_content: str, app_id: str, image_name: str, 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to modify Kubernetes manifest: {e}")
 
+# --- Grafana Helper Function ---
+async def generate_and_upload_grafana_dashboard(deployment_name: str) -> list:
+    dashboard_title = f"{deployment_name} Metrics"
+    dashboard_uid = f"traceassist-{deployment_name}"
+    
+    panel_definitions = [
+        {"id": 1, "title": "Process CPU Seconds Total", "expr": 'rate(process_cpu_seconds_total{app="' + deployment_name + '"}[5m])'},
+        {"id": 2, "title": "Process Resident Memory", "expr": 'process_resident_memory_bytes{app="' + deployment_name + '"}'},
+        {"id": 3, "title": "Process Virtual Memory", "expr": 'process_virtual_memory_bytes{app="' + deployment_name + '"}'},
+        {"id": 4, "title": "Max Virtual Memory", "expr": 'process_virtual_memory_max_bytes{app="' + deployment_name + '"}'},
+    ]
+
+    panels = []
+    for i, p_def in enumerate(panel_definitions):
+        panel = {
+            "id": p_def["id"],
+            "title": p_def["title"],
+            "type": "graph",
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "targets": [{"expr": p_def["expr"], "legendFormat": "{{pod}}"}],
+            "gridPos": {"h": 8, "w": 12, "x": 0 if i % 2 == 0 else 12, "y": (i // 2) * 8}
+        }
+        panels.append(panel)
+
+    dashboard_json = {
+        "dashboard": {
+            "id": None,
+            "uid": dashboard_uid,
+            "title": dashboard_title,
+            "panels": panels,
+            "time": {"from": "now-1h", "to": "now"},
+            "refresh": "10s",
+            "schemaVersion": 36,
+            "version": 0
+        },
+        "folderId": 0,
+        "overwrite": True
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {GRAFANA_API_TOKEN}"
+    }
+    if not GRAFANA_API_TOKEN:
+        headers.pop("Authorization", None)
+        auth = ("admin", "admin")
+    else:
+        auth = None
+
+    try:
+        logger.info(f"Attempting to create Grafana dashboard for '{deployment_name}'...")
+        logger.info(f"Connecting to Grafana API at: {GRAFANA_API_URL}")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{GRAFANA_API_URL}/api/dashboards/db", json=dashboard_json, headers=headers, auth=auth)
+            
+            logger.info(f"Grafana API response status: {response.status_code}")
+            logger.debug(f"Grafana API response body: {response.text}")
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            dashboard_slug = data.get("url", "").split('/')[-1]
+            if not dashboard_slug:
+                logger.warning("'url' key not found in Grafana API response, cannot generate links.")
+                return []
+
+            panel_links = []
+            for p_def in panel_definitions:
+                link = f"{GRAFANA_PUBLIC_URL}/d-solo/{dashboard_uid}/{dashboard_slug}?orgId=1&refresh=10s&panelId={p_def['id']}"
+                panel_links.append(link)
+            
+            logger.info(f"Successfully generated {len(panel_links)} panel links.")
+            return panel_links
+            
+    except httpx.RequestError as e:
+        logger.error(f"Failed to connect to Grafana at {GRAFANA_API_URL}. Check network connectivity from the backend pod. Error: {e}")
+        return []
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Grafana API returned an error: {e.response.status_code} - {e.response.text}")
+        return []
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during Grafana dashboard generation: {e}")
+        return []
+
 # --- API Endpoints ---
 @app.post("/deployments/analyze", response_model=AnalyzeResponse)
 async def analyze_repository(request: AnalyzeRequest):
     is_public = False
     push_required = False
-    
     try:
-        # Try to clone publicly first
         with tempfile.TemporaryDirectory() as temp_dir:
             Repo.clone_from(request.repo_url, temp_dir, depth=1)
             is_public = True
-            
             language = detect_language(temp_dir)
             manifest_path = find_first_file(Path(temp_dir), ["k8s/*.yaml", "deploy/*.yaml", "*.yaml"])
             if manifest_path:
                 _, _, instrumentation_changes_needed = modify_kubernetes_manifest(manifest_path.read_text(), "temp-check", "temp-check", language)
                 if instrumentation_changes_needed:
                     push_required = True
-            
             return AnalyzeResponse(is_public=is_public, push_required=push_required)
-
     except GitCommandError:
-        # Public clone failed, so it's likely private. A PAT is required.
         if not request.pat_token:
             raise HTTPException(status_code=400, detail="This is a private repository. A PAT token is required for analysis.")
-        
-        # Verify the provided PAT is valid before proceeding
         if not await verify_pat(request.pat_token):
             raise HTTPException(status_code=400, detail="The provided GitHub PAT is invalid or expired.")
-
         try:
-            # Now, clone using the verified PAT to analyze its contents
             with tempfile.TemporaryDirectory() as temp_dir:
                 parsed_url = urlparse(request.repo_url)
                 netloc_with_token = f"{quote(request.pat_token, safe='')}@{parsed_url.hostname}"
                 clone_url = urlunparse((parsed_url.scheme, netloc_with_token, parsed_url.path, "", "", ""))
                 Repo.clone_from(clone_url, temp_dir, depth=1)
-
                 is_public = False
                 language = detect_language(temp_dir)
                 manifest_path = find_first_file(Path(temp_dir), ["k8s/*.yaml", "deploy/*.yaml", "*.yaml"])
@@ -237,13 +318,10 @@ async def analyze_repository(request: AnalyzeRequest):
                     _, _, instrumentation_changes_needed = modify_kubernetes_manifest(manifest_path.read_text(), "temp-check", "temp-check", language)
                     if instrumentation_changes_needed:
                         push_required = True
-
                 return AnalyzeResponse(is_public=is_public, push_required=push_required)
-        
         except GitCommandError as e:
             logger.error(f"Failed to clone private repo even with PAT: {e.stderr}")
-            raise HTTPException(status_code=400, detail="Failed to create deployment with the provided PAT. Check URL and token permissions.")
-    
+            raise HTTPException(status_code=400, detail="Failed to clone repository with the provided PAT. Check URL and token permissions.")
     except Exception as e:
         logger.error(f"Unexpected error during analysis: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to analyze repository: {e}")
@@ -252,6 +330,11 @@ async def analyze_repository(request: AnalyzeRequest):
 async def create_deployment_final(deployment: DeploymentCreate, db: Session = Depends(get_db)):
     if crud.get_deployment_by_name(db, deployment_name=deployment.deployment_name):
         raise HTTPException(status_code=409, detail="A deployment with this name already exists.")
+    if deployment.pat_token:
+        if not await verify_pat(deployment.pat_token):
+            raise HTTPException(status_code=400, detail="The provided GitHub PAT is invalid or expired.")
+        if deployment.push_to_git and not check_push_permissions(deployment.repo_url, deployment.pat_token):
+             raise HTTPException(status_code=403, detail="The provided PAT token does not have push permissions for this repository.")
     language = "unknown"
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -263,12 +346,7 @@ async def create_deployment_final(deployment: DeploymentCreate, db: Session = De
             Repo.clone_from(clone_url, temp_dir, depth=1)
             language = detect_language(temp_dir)
     except GitCommandError:
-        raise HTTPException(status_code=400, detail="Failed to create deployment. If it's private, a valid PAT token is required.")
-    if deployment.pat_token:
-        if not await verify_pat(deployment.pat_token):
-            raise HTTPException(status_code=400, detail="The provided GitHub PAT is invalid or expired.")
-        if deployment.push_to_git and not check_push_permissions(deployment.repo_url, deployment.pat_token):
-             raise HTTPException(status_code=403, detail="The provided PAT token does not have push permissions for this repository.")
+        raise HTTPException(status_code=400, detail="Failed to clone repository. If it's private, a valid PAT token is required.")
     encrypted_token_str = fernet.encrypt(deployment.pat_token.encode()).decode() if deployment.pat_token else None
     db_deployment = crud.create_deployment(
         db=db,
@@ -373,6 +451,15 @@ async def instrument_and_deploy(deployment_name: str, db: Session = Depends(get_
             output_path = Path(K8S_OUTPUT_DIR) / f"{deployment_name}-{manifest_path.name}"
             output_path.write_text(manifest_path.read_text())
             subprocess.run(["kubectl", "apply", "-n", "traceassist", "-f", str(output_path)], check=True, capture_output=True, text=True, timeout=60)
+        
+        crud.update_deployment_status(db, deployment_name=deployment_name, status="Generating Grafana dashboard...")
+        panel_links = await generate_and_upload_grafana_dashboard(deployment_name)
+        if panel_links:
+            crud.update_deployment_grafana_links(db, deployment_name, json.dumps(panel_links))
+            logger.info(f"Successfully created Grafana dashboard for {deployment_name}")
+        else:
+            logger.warning(f"Could not generate Grafana dashboard for {deployment_name}. Panel links will be null.")
+
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Deployed")
         return {"message": "Deployment successful."}
     except Exception as e:

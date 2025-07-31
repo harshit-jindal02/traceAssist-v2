@@ -27,9 +27,7 @@ spec:
             - name: dockersock
               mountPath: /var/run/docker.sock
           env:
-            # --- UPDATED: Load both DATABASE_URL and the new ENCRYPTION_KEY ---
-            # The backend application will use these environment variables to connect to the
-            # database and to encrypt/decrypt PAT tokens.
+            # --- This section is restored to your original, working version ---
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -40,5 +38,11 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: ENCRYPTION_KEY
+            # --- This is the only new section, for the Grafana token ---
+            - name: GRAFANA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-api-secret
+                  key: GRAFANA_API_TOKEN
           ports:
             - containerPort: 8000

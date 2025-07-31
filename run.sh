@@ -11,9 +11,9 @@ eval "$(minikube docker-env)"
 
 # ─── 3. Build TraceAssist Images ───────────────────────────────────────────────
 echo "📦 Building TraceAssist backend image..."
-docker build -t traceassist-backend:latest backend/
+docker build -t traceassist-backend:latest ./backend/
 echo "📦 Building TraceAssist frontend image..."
-docker build -t traceassist-frontend:latest frontend/
+docker build -t traceassist-frontend:latest ./frontend/
 
 # ─── 4. Create Namespaces ──────────────────────────────────────────────────────
 echo "📂 Creating namespaces for observability stack and application..."
@@ -23,6 +23,8 @@ kubectl create namespace loki || true
 kubectl create namespace jaeger || true
 kubectl create namespace prometheus || true
 kubectl create namespace cert-manager || true
+kubectl create namespace opentelemetry-operator-system || true
+
 
 # ─── 5. Install Cert-Manager (dependency for some operators) ───────────────────
 echo "🔐 Installing cert-manager..."
@@ -31,14 +33,18 @@ echo "⏳ Waiting for cert-manager webhook to be ready..."
 kubectl -n cert-manager rollout status deployment cert-manager-webhook --timeout=2m
 
 # ─── 6. Install Observability Stack via Helm ───────────────────────────────────
-# echo "📊 Installing Grafana..."
-# helm install grafana grafana/grafana -n grafana --set adminPassword='prom-operator' --wait
+echo "📊 Installing Grafana..."
+helm upgrade --install grafana grafana/grafana -n grafana \
+  --set adminPassword='prom-operator' \
+  --set 'env.GF_SECURITY_ALLOW_EMBEDDING=true' \
+  --set 'env.GF_AUTH_ANONYMOUS_ENABLED=true' \
+  --set 'env.GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer' --wait
 
 # echo "📜 Installing Loki for logs with custom values..."
 # helm install loki-stack grafana/loki-stack -n loki -f k8s/loki-values.yaml --wait
 
-# echo "⏱️ Installing Prometheus for metrics..."
-# helm install prometheus prometheus-community/prometheus -n prometheus --wait
+echo "⏱️ Installing Prometheus for metrics..."
+helm upgrade --install prometheus prometheus-community/prometheus -n prometheus --wait
 
 # echo "🔍 Installing Jaeger for traces..."
 # helm install jaeger jaegertracing/jaeger -n jaeger --wait
@@ -53,18 +59,19 @@ helm upgrade --install \
 # ─── 8. Deploy TraceAssist Application and Collector ──────────────────────────
 echo "🚀 Deploying TraceAssist application components..."
 kubectl -n traceassist apply \
-  -f k8s/postgres-secret.yaml \
-  -f k8s/traceassist-rbac.yaml \
-  -f k8s/otel-collector-config.yaml \
-  -f k8s/otel-collector-deployment.yaml \
-  -f k8s/backend-deployment.yaml \
-  -f k8s/backend-service.yaml \
-  -f k8s/frontend-deployment.yaml \
-  -f k8s/frontend-service.yaml
+  -f ./k8s/postgres-secret.yaml \
+  -f ./k8s/grafana-secret.yaml \
+  -f ./k8s/traceassist-rbac.yaml \
+  -f ./k8s/otel-collector-config.yaml \
+  -f ./k8s/otel-collector-deployment.yaml \
+  -f ./k8s/backend-deployment.yaml \
+  -f ./k8s/backend-service.yaml \
+  -f ./k8s/frontend-deployment.yaml \
+  -f ./k8s/frontend-service.yaml
 
 # ─── 9. Apply OTel Instrumentation CR ──────────────────────────────────────────
 echo "📡 Applying OpenTelemetry Instrumentation resource..."
-kubectl apply -f k8s/instrumentation.yaml
+kubectl apply -f ./k8s/instrumentation.yaml
 
 # ─── 10. Wait for deployments and start port-forwarding ────────────────────────
 echo "⏳ Waiting for TraceAssist deployments to be ready..."
@@ -89,5 +96,5 @@ echo
 echo "NOTE: It may take a few minutes for all services to start."
 echo "Use these CORRECTED URLs to configure data sources in Grafana:"
 echo "  - Loki: http://loki-stack.loki.svc.cluster.local:3100"
-echo "  - Jaeger: http://jaeger-query.jaeger""
-echo "  - Prometheus: http://prometheus-server.prometheus"
+echo "  - Jaeger: http://jaeger-query.jaeger.svc.cluster.local:16686"
+echo "  - Prometheus: http://prometheus-server.prometheus.svc.cluster.local"

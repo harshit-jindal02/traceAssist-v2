@@ -16,7 +16,7 @@ def create_deployment(db: Session, deployment_name: str, repo_url: str, encrypte
         repo_url=repo_url,
         encrypted_pat_token=encrypted_pat_token,
         language=language,
-        push_enabled=push_enabled, # This line is corrected
+        push_enabled=push_enabled,
         status=status
     )
     db.add(db_deployment)
@@ -24,14 +24,13 @@ def create_deployment(db: Session, deployment_name: str, repo_url: str, encrypte
     db.refresh(db_deployment)
     return db_deployment
 
-def update_deployment_config(db: Session, deployment_id: int, status: str, push_enabled: bool = None, encrypted_pat_token: str = None):
-    db_deployment = get_deployment_by_id(db, deployment_id)
+def update_deployment_grafana_links(db: Session, deployment_name: str, links: str):
+    """
+    Updates the Grafana panel links for a specific deployment.
+    """
+    db_deployment = get_deployment_by_name(db, deployment_name)
     if db_deployment:
-        db_deployment.status = status
-        if push_enabled is not None:
-            db_deployment.push_enabled = push_enabled
-        if encrypted_pat_token:
-            db_deployment.encrypted_pat_token = encrypted_pat_token
+        db_deployment.grafana_panel_links = links
         db.commit()
         db.refresh(db_deployment)
     return db_deployment
