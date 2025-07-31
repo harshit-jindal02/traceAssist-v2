@@ -10,12 +10,13 @@ def get_deployment_by_name(db: Session, deployment_name: str):
 def get_deployments(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.Deployment).order_by(models.Deployment.created_at.desc()).offset(skip).limit(limit).all()
 
-def create_deployment(db: Session, deployment_name: str, repo_url: str, encrypted_pat_token: str | None, language: str, status: str = "Created"):
+def create_deployment(db: Session, deployment_name: str, repo_url: str, encrypted_pat_token: str | None, language: str, push_enabled: bool, status: str = "Created"):
     db_deployment = models.Deployment(
         deployment_name=deployment_name,
         repo_url=repo_url,
         encrypted_pat_token=encrypted_pat_token,
         language=language,
+        push_enabled=push_enabled, # This line is corrected
         status=status
     )
     db.add(db_deployment)

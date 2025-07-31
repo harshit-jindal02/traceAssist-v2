@@ -60,7 +60,7 @@ class DeploymentBase(BaseModel):
     encrypted_pat_token: Optional[str] = None
     created_at: datetime
     last_updated: Optional[datetime] = None
-
+    push_enabled: bool = True # FIX: Added with default value
 
 class Deployment(DeploymentBase):
     id: int
@@ -68,6 +68,7 @@ class Deployment(DeploymentBase):
 
 class AnalyzeRequest(BaseModel):
     repo_url: str
+    pat_token: Optional[str] = None
 
 class AnalyzeResponse(BaseModel):
     is_public: bool
@@ -77,8 +78,9 @@ class DeploymentCreate(BaseModel):
     repo_url: str
     deployment_name: str
     pat_token: Optional[str] = None
+    push_to_git: bool = True
 
-# --- [Helper Functions: verify_pat, check_push_permissions, etc. remain the same] ---
+# --- Helper Functions ---
 async def verify_pat(token: str) -> bool:
     if not token: return False
     headers = {"Authorization": f"token {token}"}
@@ -98,7 +100,6 @@ def check_push_permissions(repo_url: str, pat_token: str) -> bool:
             clone_url = urlunparse((parsed_url.scheme, netloc_with_token, parsed_url.path, "", "", ""))
             
             repo = Repo.clone_from(clone_url, temp_dir, depth=1)
-            # This command checks if a push is possible without actually pushing anything.
             repo.git.push("--dry-run")
             return True
         except GitCommandError as e:
@@ -107,7 +108,6 @@ def check_push_permissions(repo_url: str, pat_token: str) -> bool:
         except Exception as e:
             logger.error(f"An unexpected error occurred during push permission check: {e}")
             return False
-
 
 def detect_language(app_path: str) -> str:
     has_package_json = False; py_count = 0; java_count = 0
@@ -132,46 +132,33 @@ def find_first_file(directory: Path, patterns: list):
     return None
 
 def modify_kubernetes_manifest(yaml_content: str, app_id: str, image_name: str, language: str):
-    """
-    Modifies Kubernetes manifests for TraceAssist deployment.
-    Returns the modified content and flags indicating if any changes were made,
-    and specifically if instrumentation changes were made.
-    """
     try:
         docs = list(yaml.safe_load_all(yaml_content))
         modified_docs = []
         any_changes_made = False
-        instrumentation_changes_made = False  # Flag for instrumentation-specific changes
-
+        instrumentation_changes_made = False
         for doc in docs:
             if not isinstance(doc, dict):
                 modified_docs.append(doc)
                 continue
-
             kind = doc.get("kind")
             original_app_label = doc.get('metadata', {}).get('labels', {}).get('app')
-
             if kind == "Deployment":
-                # --- Structural Changes (do not trigger a push) ---
                 if doc['metadata'].get('name') != f"{app_id}-deployment":
                     doc['metadata']['name'] = f"{app_id}-deployment"
                     any_changes_made = True
-
                 labels = doc['metadata'].setdefault('labels', {})
                 if labels.get('app') != app_id:
                     labels['app'] = app_id
                     any_changes_made = True
-                
                 spec = doc.setdefault('spec', {})
                 if spec.setdefault('selector', {}).setdefault('matchLabels', {}).get('app') != app_id:
                     spec['selector']['matchLabels']['app'] = app_id
                     any_changes_made = True
-
                 template = spec.setdefault('template', {})
                 if template.setdefault('metadata', {}).setdefault('labels', {}).get('app') != app_id:
                     template['metadata']['labels']['app'] = app_id
                     any_changes_made = True
-                
                 pod_spec = template.setdefault('spec', {})
                 containers = pod_spec.setdefault('containers', [])
                 if containers:
@@ -182,120 +169,117 @@ def modify_kubernetes_manifest(yaml_content: str, app_id: str, image_name: str, 
                     if container_to_modify.get('imagePullPolicy') != 'Never':
                         container_to_modify['imagePullPolicy'] = 'Never'
                         any_changes_made = True
-
-                # --- Instrumentation Changes (WILL trigger a push) ---
                 annotations = template.setdefault('metadata', {}).setdefault('annotations', {})
                 if annotations.get("instrumentation.opentelemetry.io/inject") != "true":
                     annotations["instrumentation.opentelemetry.io/inject"] = "true"
                     any_changes_made = True
                     instrumentation_changes_made = True
-
                 if language != "unknown" and annotations.get(f"instrumentation.opentelemetry.io/inject-{language}") != "true":
                      annotations[f"instrumentation.opentelemetry.io/inject-{language}"] = "true"
                      any_changes_made = True
                      instrumentation_changes_made = True
-                
                 if pod_spec.get('serviceAccountName') != 'traceassist-sa':
                     pod_spec['serviceAccountName'] = 'traceassist-sa'
                     any_changes_made = True
                     instrumentation_changes_made = True
-
             elif kind == "Service":
                 spec = doc.setdefault('spec', {})
                 if spec.setdefault('selector', {}).get('app') != app_id:
                     spec['selector']['app'] = app_id
                     any_changes_made = True
-            
             modified_docs.append(doc)
-
         return yaml.dump_all(modified_docs, sort_keys=False), any_changes_made, instrumentation_changes_made
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to modify Kubernetes manifest: {e}")
-
 
 # --- API Endpoints ---
 @app.post("/deployments/analyze", response_model=AnalyzeResponse)
 async def analyze_repository(request: AnalyzeRequest):
     is_public = False
+    push_required = False
+    
     try:
+        # Try to clone publicly first
         with tempfile.TemporaryDirectory() as temp_dir:
             Repo.clone_from(request.repo_url, temp_dir, depth=1)
             is_public = True
             
             language = detect_language(temp_dir)
             manifest_path = find_first_file(Path(temp_dir), ["k8s/*.yaml", "deploy/*.yaml", "*.yaml"])
-            push_required = False
             if manifest_path:
                 _, _, instrumentation_changes_needed = modify_kubernetes_manifest(manifest_path.read_text(), "temp-check", "temp-check", language)
                 if instrumentation_changes_needed:
                     push_required = True
-    except GitCommandError:
-        is_public = False
-        push_required = True # Assume push is required for private repos
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to analyze repository: {e}")
+            
+            return AnalyzeResponse(is_public=is_public, push_required=push_required)
 
-    return AnalyzeResponse(is_public=is_public, push_required=push_required)
+    except GitCommandError:
+        # Public clone failed, so it's likely private. A PAT is required.
+        if not request.pat_token:
+            raise HTTPException(status_code=400, detail="This is a private repository. A PAT token is required for analysis.")
+        
+        # Verify the provided PAT is valid before proceeding
+        if not await verify_pat(request.pat_token):
+            raise HTTPException(status_code=400, detail="The provided GitHub PAT is invalid or expired.")
+
+        try:
+            # Now, clone using the verified PAT to analyze its contents
+            with tempfile.TemporaryDirectory() as temp_dir:
+                parsed_url = urlparse(request.repo_url)
+                netloc_with_token = f"{quote(request.pat_token, safe='')}@{parsed_url.hostname}"
+                clone_url = urlunparse((parsed_url.scheme, netloc_with_token, parsed_url.path, "", "", ""))
+                Repo.clone_from(clone_url, temp_dir, depth=1)
+
+                is_public = False
+                language = detect_language(temp_dir)
+                manifest_path = find_first_file(Path(temp_dir), ["k8s/*.yaml", "deploy/*.yaml", "*.yaml"])
+                if manifest_path:
+                    _, _, instrumentation_changes_needed = modify_kubernetes_manifest(manifest_path.read_text(), "temp-check", "temp-check", language)
+                    if instrumentation_changes_needed:
+                        push_required = True
+
+                return AnalyzeResponse(is_public=is_public, push_required=push_required)
+        
+        except GitCommandError as e:
+            logger.error(f"Failed to clone private repo even with PAT: {e.stderr}")
+            raise HTTPException(status_code=400, detail="Failed to clone repository with the provided PAT. Check URL and token permissions.")
+    
+    except Exception as e:
+        logger.error(f"Unexpected error during analysis: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to analyze repository: {e}")
 
 @app.post("/deployments", status_code=status.HTTP_201_CREATED, response_model=Deployment)
 async def create_deployment_final(deployment: DeploymentCreate, db: Session = Depends(get_db)):
     if crud.get_deployment_by_name(db, deployment_name=deployment.deployment_name):
         raise HTTPException(status_code=409, detail="A deployment with this name already exists.")
-
-    # --- NEW LOGIC: Re-analyze the repo to determine if a PAT is actually needed ---
-    push_required = True
-    is_public = False
     language = "unknown"
-
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            Repo.clone_from(deployment.repo_url, temp_dir, depth=1)
-            is_public = True
+            clone_url = deployment.repo_url
+            if deployment.pat_token:
+                parsed_url = urlparse(clone_url)
+                netloc_with_token = f"{quote(deployment.pat_token, safe='')}@{parsed_url.hostname}"
+                clone_url = urlunparse((parsed_url.scheme, netloc_with_token, parsed_url.path, "", "", ""))
+            Repo.clone_from(clone_url, temp_dir, depth=1)
             language = detect_language(temp_dir)
-            manifest_path = find_first_file(Path(temp_dir), ["k8s/*.yaml", "deploy/*.yaml", "*.yaml"])
-            
-            if manifest_path:
-                _, _, instrumentation_changes_needed = modify_kubernetes_manifest(manifest_path.read_text(), "temp-check", "temp-check", language)
-                if not instrumentation_changes_needed:
-                    push_required = False
-            else:
-                push_required = False 
-
     except GitCommandError:
-        is_public = False
-        push_required = True
-
-    # --- NEW LOGIC: Conditionally validate and use the PAT ---
-    final_pat_token = deployment.pat_token
-    
-    if is_public and not push_required:
-        # If it's a public repo and no changes are needed, ignore any provided token.
-        final_pat_token = None
-    elif final_pat_token: # Only validate if a token is provided and it might be needed
-        if not await verify_pat(final_pat_token):
+        raise HTTPException(status_code=400, detail="Failed to clone repository. If it's private, a valid PAT token is required.")
+    if deployment.pat_token:
+        if not await verify_pat(deployment.pat_token):
             raise HTTPException(status_code=400, detail="The provided GitHub PAT is invalid or expired.")
-        if not check_push_permissions(deployment.repo_url, final_pat_token):
+        if deployment.push_to_git and not check_push_permissions(deployment.repo_url, deployment.pat_token):
              raise HTTPException(status_code=403, detail="The provided PAT token does not have push permissions for this repository.")
-    elif not is_public and not final_pat_token:
-        # Private repo but no token provided
-        raise HTTPException(status_code=400, detail="This is a private repository. A valid PAT token is required.")
-    
-    # We already detected the language, so no need to clone again.
-    # If cloning failed above, it would have raised an exception.
-
-    encrypted_token_str = fernet.encrypt(final_pat_token.encode()).decode() if final_pat_token else None
-
+    encrypted_token_str = fernet.encrypt(deployment.pat_token.encode()).decode() if deployment.pat_token else None
     db_deployment = crud.create_deployment(
         db=db,
         deployment_name=deployment.deployment_name,
         repo_url=deployment.repo_url,
         encrypted_pat_token=encrypted_token_str,
         language=language,
+        push_enabled=deployment.push_to_git,
         status="Created"
     )
     return db_deployment
-
 
 @app.get("/deployments", response_model=List[Deployment])
 def get_all_deployments(db: Session = Depends(get_db)):
@@ -313,13 +297,10 @@ async def undeploy_application(deployment_name: str, db: Session = Depends(get_d
     db_deployment = crud.get_deployment_by_name(db, deployment_name=deployment_name)
     if not db_deployment:
         raise HTTPException(status_code=404, detail="Deployment not found.")
-    
     try:
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Undeploying")
-        
         manifest_dir = Path(K8S_OUTPUT_DIR)
         manifest_files = list(manifest_dir.glob(f"{deployment_name}-*.yaml"))
-        
         if not manifest_files:
             logger.warning(f"No manifest files found for '{deployment_name}' to delete.")
         else:
@@ -330,11 +311,9 @@ async def undeploy_application(deployment_name: str, db: Session = Depends(get_d
                     logger.info(f"Deleted manifest and Kubernetes resource for {file_path}")
                 except Exception as e:
                     logger.error(f"Failed to delete resource for {file_path}: {e}")
-
         app_dir = Path(BASE_DIR) / deployment_name
         if app_dir.exists():
             shutil.rmtree(app_dir)
-            
         crud.delete_deployment_by_name(db, deployment_name=deployment_name)
         return {"message": f"Successfully undeployed and deleted record for '{deployment_name}'."}
     except Exception as e:
@@ -347,70 +326,55 @@ async def instrument_and_deploy(deployment_name: str, db: Session = Depends(get_
     db_deployment = crud.get_deployment_by_name(db, deployment_name)
     if not db_deployment:
         raise HTTPException(status_code=404, detail="Deployment not found.")
-    
     app_dir = Path(BASE_DIR) / deployment_name
-    
     try:
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Cloning repository...")
         pat_token = None
         if db_deployment.encrypted_pat_token:
             pat_token = fernet.decrypt(db_deployment.encrypted_pat_token.encode()).decode()
-        
         effective_clone_url = db_deployment.repo_url
         if pat_token:
             parsed_url = urlparse(db_deployment.repo_url)
             netloc_with_token = f"{quote(pat_token, safe='')}@{parsed_url.hostname}"
             effective_clone_url = urlunparse((parsed_url.scheme, netloc_with_token, parsed_url.path, "", "", ""))
-        
         if app_dir.exists(): shutil.rmtree(app_dir)
         repo = Repo.clone_from(effective_clone_url, str(app_dir))
-
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Building Docker image...")
         language = db_deployment.language
         dockerfile_path = find_first_file(app_dir, ["Dockerfile", "dockerfile"])
         if not dockerfile_path:
             raise HTTPException(status_code=404, detail="Dockerfile not found in repository.")
-        
         image_name = f"user-app-{deployment_name.lower()}:latest"
         subprocess.run(["docker", "build", "-t", image_name, "."], cwd=str(app_dir), check=True, capture_output=True, text=True)
-
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Analyzing Kubernetes manifests...")
         search_dirs = [app_dir, app_dir / "k8s", app_dir / "deploy", app_dir / "manifests"]
         found_manifest_paths = [p for d in search_dirs if d.is_dir() for p in d.glob("*.yaml")] + [p for d in search_dirs if d.is_dir() for p in d.glob("*.yml")]
         if not found_manifest_paths:
             raise HTTPException(status_code=404, detail="No Kubernetes YAML manifests found.")
-        
-        push_required = False
-        
+        instrumentation_changes_needed = False
         for manifest_path in found_manifest_paths:
             original_content = manifest_path.read_text()
-            modified_content, any_changes_made, instrumentation_changes_made = modify_kubernetes_manifest(original_content, deployment_name, image_name, language)
-            
+            modified_content, any_changes_made, instr_changes = modify_kubernetes_manifest(original_content, deployment_name, image_name, language)
             if any_changes_made:
                 manifest_path.write_text(modified_content)
-            
-            if instrumentation_changes_made:
-                push_required = True
-
-        if push_required and pat_token:
+            if instr_changes:
+                instrumentation_changes_needed = True
+        if instrumentation_changes_needed and pat_token and db_deployment.push_enabled:
             crud.update_deployment_status(db, deployment_name=deployment_name, status="Pushing manifest changes to Git...")
             repo.git.add(all=True)
             repo.index.commit("feat: Add OpenTelemetry instrumentation by TraceAssist")
             repo.remotes.origin.push()
-        elif not push_required:
+        elif not instrumentation_changes_needed:
             crud.update_deployment_status(db, deployment_name=deployment_name, status="Manifests already instrumented.")
-        elif push_required and not pat_token:
+        else:
             crud.update_deployment_status(db, deployment_name=deployment_name, status="Proceeding without pushing changes to Git.")
-
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Deploying to Kubernetes...")
         for manifest_path in found_manifest_paths:
             output_path = Path(K8S_OUTPUT_DIR) / f"{deployment_name}-{manifest_path.name}"
             output_path.write_text(manifest_path.read_text())
             subprocess.run(["kubectl", "apply", "-n", "traceassist", "-f", str(output_path)], check=True, capture_output=True, text=True, timeout=60)
-
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Deployed")
         return {"message": "Deployment successful."}
-
     except Exception as e:
         crud.update_deployment_status(db, deployment_name=deployment_name, status="Failed")
         detail = e.stderr if hasattr(e, 'stderr') else str(e)

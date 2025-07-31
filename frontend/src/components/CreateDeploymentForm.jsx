@@ -17,7 +17,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  const [modalType, setModalType] = useState(null); // 'push-required' or 'no-changes-needed'
+  const [modalType, setModalType] = useState(null); // 'public-push-required', 'private-push-required', 'no-changes-needed'
   const patInputRef = useRef(null);
 
   const resetForm = () => {
@@ -36,34 +36,37 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
     setSuccess('');
 
     try {
-      const response = await axios.post(`${backendUrl}/deployments/analyze`, { repo_url: repoUrl });
+      // The backend /analyze now handles all verification logic, including PAT validation first for private repos.
+      const response = await axios.post(`${backendUrl}/deployments/analyze`, { 
+        repo_url: repoUrl,
+        pat_token: patToken 
+      });
       const analysis = response.data;
 
-      if (!analysis.is_public) {
-        if (!patToken) {
-          setError("This is a private repository. A PAT token is required.");
+      if (analysis.push_required) {
+        if (analysis.is_public) {
+          // Public repo needs changes. Since the user didn't provide a token
+          // on the main form before clicking, we must ask for one.
+          setModalType('public-push-required');
         } else {
-          handleFinalSubmit(); // Private repo with token, proceed directly
+          // Private repo needs changes. The PAT has been validated by the backend.
+          // Now we ask the user for permission to push.
+          setModalType('private-push-required');
         }
-      } else { // Public repository
-        if (analysis.push_required) {
-          if (!patToken) {
-            setModalType('push-required'); // Needs changes, no token provided yet
-          } else {
-            handleFinalSubmit(); // Needs changes, token is provided, proceed
-          }
-        } else {
-          setModalType('no-changes-needed'); // No changes needed
-        }
+      } else {
+        // No changes needed for either public or private repo.
+        setModalType('no-changes-needed');
       }
+
     } catch (err) {
+      // This will now catch errors from the backend like "PAT is invalid" or "Private repo, token required".
       setError(err.response?.data?.detail || 'Failed to analyze repository.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleFinalSubmit = async (useEmptyToken = false) => {
+  const handleFinalSubmit = async ({ push_to_git = true, useEmptyToken = false } = {}) => {
     setLoading(true);
     setError('');
     setModalType(null);
@@ -73,7 +76,12 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
     try {
       await axios.post(
         `${backendUrl}/deployments`,
-        { repo_url: repoUrl, deployment_name: deploymentName, pat_token: finalPatToken }
+        { 
+          repo_url: repoUrl, 
+          deployment_name: deploymentName, 
+          pat_token: finalPatToken,
+          push_to_git: push_to_git // Send the user's choice to the backend
+        }
       );
       setSuccess(`Deployment '${deploymentName}' created successfully!`);
       resetForm();
@@ -87,7 +95,6 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
   
   const handleCloseModalAndFocus = () => {
     setModalType(null);
-    // Use a timeout to ensure the DOM is updated before focusing
     setTimeout(() => {
         patInputRef.current?.focus();
     }, 100);
@@ -122,7 +129,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
           <TextField
             inputRef={patInputRef}
             type={showPatToken ? 'text' : 'password'}
-            label="GitHub PAT (Optional for public repos)"
+            label="GitHub PAT (Required for private repos)"
             value={patToken}
             onChange={(e) => setPatToken(e.target.value)}
             fullWidth
@@ -154,8 +161,8 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
         </Box>
       </Paper>
 
-      {/* Modal for when push is required */}
-      <Dialog open={modalType === 'push-required'} onClose={() => setModalType(null)}>
+      {/* Modal for PUBLIC repos when push is required */}
+      <Dialog open={modalType === 'public-push-required'} onClose={() => setModalType(null)}>
         <DialogTitle>Instrumentation Changes Required</DialogTitle>
         <DialogContent>
           <DialogContentText>
@@ -165,23 +172,39 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => handleFinalSubmit(true)}>Proceed without Pushing</Button>
+          <Button onClick={() => handleFinalSubmit({ useEmptyToken: true, push_to_git: false })}>Proceed without Pushing</Button>
           <Button onClick={handleCloseModalAndFocus} variant="contained">
             OK, I'll add a PAT
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Modal for when no changes are needed */}
+      {/* Modal for PRIVATE repos when push is required */}
+      <Dialog open={modalType === 'private-push-required'} onClose={() => setModalType(null)}>
+        <DialogTitle>Confirm Push to Private Repository</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            This private repository's manifests need updates for instrumentation. Do you want to push these changes to your repository?
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => handleFinalSubmit({ push_to_git: false })}>No, Proceed without Pushing</Button>
+          <Button onClick={() => handleFinalSubmit({ push_to_git: true })} variant="contained">
+            Yes, Push Changes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Modal for when no changes are needed (works for public and private) */}
       <Dialog open={modalType === 'no-changes-needed'} onClose={() => setModalType(null)}>
         <DialogTitle>Manifests Already Instrumented</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            This public repository's manifests are already up-to-date. No PAT token is required.
+            This repository's manifests are already up-to-date. A Git push will not be performed.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => handleFinalSubmit()} variant="contained">
+          <Button onClick={() => handleFinalSubmit({ push_to_git: false })} variant="contained">
             Proceed
           </Button>
         </DialogActions>
