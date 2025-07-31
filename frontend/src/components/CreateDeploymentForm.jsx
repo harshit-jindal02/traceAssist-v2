@@ -47,7 +47,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
 
       if (!analysis.is_public) { // Private Repo Logic
         if (!patToken) {
-          setError("This is a private repository. A PAT token is required.");
+          setError("The link is invalid or this is a private repository. A PAT token is required.");
         } else {
           if (analysis.push_required) {
             setModalType('private-push-required');

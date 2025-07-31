@@ -242,7 +242,7 @@ async def analyze_repository(request: AnalyzeRequest):
         
         except GitCommandError as e:
             logger.error(f"Failed to clone private repo even with PAT: {e.stderr}")
-            raise HTTPException(status_code=400, detail="Failed to clone repository with the provided PAT. Check URL and token permissions.")
+            raise HTTPException(status_code=400, detail="Failed to create deployment with the provided PAT. Check URL and token permissions.")
     
     except Exception as e:
         logger.error(f"Unexpected error during analysis: {e}")
@@ -263,7 +263,7 @@ async def create_deployment_final(deployment: DeploymentCreate, db: Session = De
             Repo.clone_from(clone_url, temp_dir, depth=1)
             language = detect_language(temp_dir)
     except GitCommandError:
-        raise HTTPException(status_code=400, detail="Failed to clone repository. If it's private, a valid PAT token is required.")
+        raise HTTPException(status_code=400, detail="Failed to create deployment. If it's private, a valid PAT token is required.")
     if deployment.pat_token:
         if not await verify_pat(deployment.pat_token):
             raise HTTPException(status_code=400, detail="The provided GitHub PAT is invalid or expired.")
