@@ -18,6 +18,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
   const [success, setSuccess] = useState('');
 
   const [modalType, setModalType] = useState(null); // 'public-push-required', 'private-push-required', 'no-changes-needed'
+  const [analysisResult, setAnalysisResult] = useState(null); // Store analysis result
   const patInputRef = useRef(null);
 
   const resetForm = () => {
@@ -27,39 +28,46 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
     setSuccess('');
     setError('');
     setModalType(null);
+    setAnalysisResult(null);
   };
 
-  const handleInitialSubmit = async (e) => {
+  const handleAnalyzeRepo = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
     setSuccess('');
 
     try {
-      // The backend /analyze now handles all verification logic, including PAT validation first for private repos.
       const response = await axios.post(`${backendUrl}/deployments/analyze`, { 
         repo_url: repoUrl,
         pat_token: patToken 
       });
       const analysis = response.data;
+      setAnalysisResult(analysis); // Store the analysis result
 
-      if (analysis.push_required) {
-        if (analysis.is_public) {
-          // Public repo needs changes. Since the user didn't provide a token
-          // on the main form before clicking, we must ask for one.
-          setModalType('public-push-required');
+      if (!analysis.is_public) { // Private Repo Logic
+        if (!patToken) {
+          setError("This is a private repository. A PAT token is required.");
         } else {
-          // Private repo needs changes. The PAT has been validated by the backend.
-          // Now we ask the user for permission to push.
-          setModalType('private-push-required');
+          if (analysis.push_required) {
+            setModalType('private-push-required');
+          } else {
+            setModalType('no-changes-needed');
+          }
         }
-      } else {
-        // No changes needed for either public or private repo.
-        setModalType('no-changes-needed');
+      } else { // Public Repo Logic
+        if (analysis.push_required) {
+          if (!patToken) {
+            setModalType('public-push-required');
+          } else {
+            handleFinalSubmit({ push_to_git: true });
+          }
+        } else {
+          setModalType('no-changes-needed');
+        }
       }
 
     } catch (err) {
-      // This will now catch errors from the backend like "PAT is invalid" or "Private repo, token required".
       setError(err.response?.data?.detail || 'Failed to analyze repository.');
     } finally {
       setLoading(false);
@@ -80,7 +88,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
           repo_url: repoUrl, 
           deployment_name: deploymentName, 
           pat_token: finalPatToken,
-          push_to_git: push_to_git // Send the user's choice to the backend
+          push_to_git: push_to_git
         }
       );
       setSuccess(`Deployment '${deploymentName}' created successfully!`);
@@ -106,7 +114,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
         <Typography variant="h5" gutterBottom align="center" fontWeight="bold">
           Create New Deployment
         </Typography>
-        <Box component="form" onSubmit={handleInitialSubmit} display="flex" flexDirection="column" gap={2.5}>
+        <Box component="form" onSubmit={handleAnalyzeRepo} display="flex" flexDirection="column" gap={2.5}>
           <TextField
             label="Custom Deployment Name"
             placeholder="my-production-api"
@@ -156,7 +164,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
             startIcon={loading ? <CircularProgress size={20} color="inherit" /> : <AddCircleOutlineIcon />}
             sx={{ mt: 2, py: 1.5, fontWeight: 'bold' }}
           >
-            {loading ? 'Analyzing...' : 'Create Deployment'}
+            {loading ? 'Analyzing...' : 'Analyze & Create Deployment'}
           </Button>
         </Box>
       </Paper>
@@ -172,7 +180,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => handleFinalSubmit({ useEmptyToken: true, push_to_git: false })}>Proceed without Pushing</Button>
+          <Button onClick={() => handleFinalSubmit({ push_to_git: false })}>Proceed without Pushing</Button>
           <Button onClick={handleCloseModalAndFocus} variant="contained">
             OK, I'll add a PAT
           </Button>
@@ -204,7 +212,15 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => handleFinalSubmit({ push_to_git: false })} variant="contained">
+          <Button 
+            onClick={() => {
+              // Check if the repo was public. If so, we can discard the token.
+              // If it was private, we must keep the token for cloning.
+              const isPublicRepo = analysisResult ? analysisResult.is_public : false;
+              handleFinalSubmit({ push_to_git: false, useEmptyToken: isPublicRepo });
+            }} 
+            variant="contained"
+          >
             Proceed
           </Button>
         </DialogActions>
