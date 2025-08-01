@@ -32,12 +32,16 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: DATABASE_URL
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: ENCRYPTION_KEY
             - name: GRAFANA_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: grafana-api-secret
                   key: GRAFANA_API_TOKEN
-            # --- NEW: Mount the Grafana URLs from the secret ---
             - name: GRAFANA_API_URL
               valueFrom:
                 secretKeyRef:
