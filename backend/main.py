@@ -48,9 +48,9 @@ logger = logging.getLogger(__name__)
 BASE_DIR = "user-apps"
 K8S_OUTPUT_DIR = "k8s-generated"
 
-# FIX: Corrected the in-cluster Grafana URL to use the correct namespace ('grafana') and port (80)
+# Updated Grafana Configuration
 GRAFANA_API_URL = os.getenv("GRAFANA_API_URL", "http://grafana.grafana.svc.cluster.local:80")
-GRAFANA_PUBLIC_URL = os.getenv("GRAFANA_PUBLIC_URL", "http://localhost:3000") # This remains the same for the user's browser
+GRAFANA_PUBLIC_URL = os.getenv("GRAFANA_PUBLIC_URL", "http://localhost:3000") # URL for user's browser
 GRAFANA_API_TOKEN = os.getenv("GRAFANA_API_TOKEN", "")
 
 # Ensure directories exist at startup
@@ -204,11 +204,32 @@ async def generate_and_upload_grafana_dashboard(deployment_name: str) -> list:
     dashboard_title = f"{deployment_name} Metrics"
     dashboard_uid = f"traceassist-{deployment_name}"
     
+    # --- NEW: Updated Panel Definitions for Core Infrastructure Metrics ---
     panel_definitions = [
-        {"id": 1, "title": "Process CPU Seconds Total", "expr": 'rate(process_cpu_seconds_total{app="' + deployment_name + '"}[5m])'},
-        {"id": 2, "title": "Process Resident Memory", "expr": 'process_resident_memory_bytes{app="' + deployment_name + '"}'},
-        {"id": 3, "title": "Process Virtual Memory", "expr": 'process_virtual_memory_bytes{app="' + deployment_name + '"}'},
-        {"id": 4, "title": "Max Virtual Memory", "expr": 'process_virtual_memory_max_bytes{app="' + deployment_name + '"}'},
+        {
+            "id": 1, 
+            "title": "CPU Usage (Cores)", 
+            "expr": 'sum(rate(container_cpu_usage_seconds_total{container!="", pod!="", app="' + deployment_name + '"}[5m])) by (pod)',
+            "format": "short" # Standard decimal format
+        },
+        {
+            "id": 2, 
+            "title": "Memory Usage (MB)", 
+            "expr": 'sum(container_memory_working_set_bytes{container!="", pod!="", app="' + deployment_name + '"}) by (pod)',
+            "format": "bytes" # Grafana will auto-format to MB/GB
+        },
+        {
+            "id": 3, 
+            "title": "Network Traffic (Bytes/sec)", 
+            "expr": 'sum(rate(container_network_receive_bytes_total{pod!="", app="' + deployment_name + '"}[5m]) + rate(container_network_transmit_bytes_total{pod!="", app="' + deployment_name + '"}[5m])) by (pod)',
+            "format": "bps" # Bytes per second
+        },
+        {
+            "id": 4, 
+            "title": "Disk I/O (Bytes/sec)", 
+            "expr": 'sum(rate(container_fs_reads_bytes_total{container!="", pod!="", app="' + deployment_name + '"}[5m]) + rate(container_fs_writes_bytes_total{container!="", pod!="", app="' + deployment_name + '"}[5m])) by (pod)',
+            "format": "bps" # Bytes per second
+        },
     ]
 
     panels = []
@@ -219,7 +240,12 @@ async def generate_and_upload_grafana_dashboard(deployment_name: str) -> list:
             "type": "graph",
             "datasource": {"type": "prometheus", "uid": "prometheus"},
             "targets": [{"expr": p_def["expr"], "legendFormat": "{{pod}}"}],
-            "gridPos": {"h": 8, "w": 12, "x": 0 if i % 2 == 0 else 12, "y": (i // 2) * 8}
+            "gridPos": {"h": 8, "w": 12, "x": 0 if i % 2 == 0 else 12, "y": (i // 2) * 8},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": p_def["format"]
+                }
+            }
         }
         panels.append(panel)
 
@@ -243,17 +269,12 @@ async def generate_and_upload_grafana_dashboard(deployment_name: str) -> list:
         "Content-Type": "application/json",
         "Authorization": f"Bearer {GRAFANA_API_TOKEN}"
     }
-    if not GRAFANA_API_TOKEN:
-        headers.pop("Authorization", None)
-        auth = ("admin", "admin")
-    else:
-        auth = None
 
     try:
         logger.info(f"Attempting to create Grafana dashboard for '{deployment_name}'...")
         logger.info(f"Connecting to Grafana API at: {GRAFANA_API_URL}")
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{GRAFANA_API_URL}/api/dashboards/db", json=dashboard_json, headers=headers, auth=auth)
+            response = await client.post(f"{GRAFANA_API_URL}/api/dashboards/db", json=dashboard_json, headers=headers)
             
             logger.info(f"Grafana API response status: {response.status_code}")
             logger.debug(f"Grafana API response body: {response.text}")
