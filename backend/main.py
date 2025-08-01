@@ -204,9 +204,7 @@ async def generate_and_upload_grafana_dashboard(deployment_name: str) -> list:
     dashboard_title = f"{deployment_name} Metrics"
     dashboard_uid = f"traceassist-{deployment_name}"
     
-    # --- CORRECTED: Panel Definitions using Regex to Match Pod Names ---
-    # We construct a regex pattern to match pod names that start with the deployment name.
-    # The deployment resource is named "{deployment_name}-deployment" by the script.
+    # Using a regex to match pod names starting with the deployment name
     pod_name_pattern = f"{deployment_name}-deployment-.*"
 
     panel_definitions = [
@@ -295,7 +293,8 @@ async def generate_and_upload_grafana_dashboard(deployment_name: str) -> list:
 
             panel_links = []
             for p_def in panel_definitions:
-                link = f"{GRAFANA_PUBLIC_URL}/d-solo/{dashboard_uid}/{dashboard_slug}?orgId=1&refresh=10s&panelId={p_def['id']}"
+                # --- CHANGE: Added &theme=light to the end of the URL ---
+                link = f"{GRAFANA_PUBLIC_URL}/d-solo/{dashboard_uid}/{dashboard_slug}?orgId=1&refresh=10s&panelId={p_def['id']}&theme=light"
                 panel_links.append(link)
             
             logger.info(f"Successfully generated {len(panel_links)} panel links.")
