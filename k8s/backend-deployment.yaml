@@ -27,22 +27,26 @@ spec:
             - name: dockersock
               mountPath: /var/run/docker.sock
           env:
-            # --- This section is restored to your original, working version ---
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: postgres-secret
                   key: DATABASE_URL
-            - name: ENCRYPTION_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-secret
-                  key: ENCRYPTION_KEY
-            # --- This is the only new section, for the Grafana token ---
             - name: GRAFANA_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: grafana-api-secret
                   key: GRAFANA_API_TOKEN
+            # --- NEW: Mount the Grafana URLs from the secret ---
+            - name: GRAFANA_API_URL
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-api-secret
+                  key: GRAFANA_API_URL
+            - name: GRAFANA_PUBLIC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-api-secret
+                  key: GRAFANA_PUBLIC_URL
           ports:
             - containerPort: 8000

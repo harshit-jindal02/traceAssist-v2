@@ -49,9 +49,9 @@ BASE_DIR = "user-apps"
 K8S_OUTPUT_DIR = "k8s-generated"
 
 # Updated Grafana Configuration
-GRAFANA_API_URL = os.getenv("GRAFANA_API_URL", "http://grafana.grafana.svc.cluster.local:80")
-GRAFANA_PUBLIC_URL = os.getenv("GRAFANA_PUBLIC_URL", "http://localhost:3000") # URL for user's browser
-GRAFANA_API_TOKEN = os.getenv("GRAFANA_API_TOKEN", "")
+GRAFANA_API_URL = os.getenv("GRAFANA_API_URL")
+GRAFANA_PUBLIC_URL = os.getenv("GRAFANA_PUBLIC_URL")
+GRAFANA_API_TOKEN = os.getenv("GRAFANA_API_TOKEN")
 
 # Ensure directories exist at startup
 os.makedirs(BASE_DIR, exist_ok=True)
