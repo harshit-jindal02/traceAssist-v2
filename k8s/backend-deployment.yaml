@@ -13,44 +13,21 @@ spec:
       labels:
         app: traceassist-backend
     spec:
-      serviceAccountName: traceassist-sa
-      volumes:
-        - name: dockersock
-          hostPath:
-            path: /var/run/docker.sock
-            type: Socket
       containers:
         - name: traceassist-backend
-          image: traceassist-backend:latest
+          # IMPORTANT: Update this with the path to your production image
+          image: your-registry/traceassist-backend:latest
           imagePullPolicy: IfNotPresent
-          volumeMounts:
-            - name: dockersock
-              mountPath: /var/run/docker.sock
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-secret
-                  key: DATABASE_URL
-            - name: ENCRYPTION_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-secret
-                  key: ENCRYPTION_KEY
-            - name: GRAFANA_API_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: grafana-api-secret
-                  key: GRAFANA_API_TOKEN
-            - name: GRAFANA_API_URL
-              valueFrom:
-                secretKeyRef:
-                  name: grafana-api-secret
-                  key: GRAFANA_API_URL
-            - name: GRAFANA_PUBLIC_URL
-              valueFrom:
-                secretKeyRef:
-                  name: grafana-api-secret
-                  key: GRAFANA_PUBLIC_URL
           ports:
             - containerPort: 8000
+          env:
+            # This section tells Kubernetes to create an environment variable
+            # named DATABASE_URL inside the container.
+            - name: DATABASE_URL
+              valueFrom:
+                # It gets the value from the secret named 'postgres-secret'.
+                secretKeyRef:
+                  name: postgres-secret
+                  # It uses the key 'DATABASE_URL' from that secret.
+                  key: DATABASE_URL
+
