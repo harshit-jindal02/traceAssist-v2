@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Box, Button, TextField, CircularProgress, Typography,
   IconButton, InputAdornment, Paper, Alert, Dialog, DialogActions,
@@ -16,10 +16,17 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-
-  const [modalType, setModalType] = useState(null); // 'public-push-required', 'private-push-required', 'no-changes-needed'
-  const [analysisResult, setAnalysisResult] = useState(null); // Store analysis result
+  const [modalType, setModalType] = useState(null);
+  const [analysisResult, setAnalysisResult] = useState(null);
+  
+  // --- FIX: Add state to track if the analysis step is complete ---
+  const [analysisComplete, setAnalysisComplete] = useState(false);
   const patInputRef = useRef(null);
+
+  // --- FIX: Reset analysis if the repo URL changes ---
+  useEffect(() => {
+    setAnalysisComplete(false);
+  }, [repoUrl]);
 
   const resetForm = () => {
     setRepoUrl('');
@@ -29,39 +36,52 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
     setError('');
     setModalType(null);
     setAnalysisResult(null);
+    setAnalysisComplete(false);
   };
 
-  const handleAnalyzeRepo = async (e) => {
+  const handleFormSubmit = async (e) => {
     e.preventDefault();
+    // --- FIX: If analysis is done, proceed to final submission ---
+    if (analysisComplete) {
+      // Logic for private repos or public repos that need a push
+      if ((!analysisResult.is_public && patToken) || (analysisResult.is_public && analysisResult.push_required && patToken)) {
+        handleFinalSubmit({ push_to_git: true });
+      } else {
+        // Fallback for cases where no token is needed after analysis
+        handleFinalSubmit({ push_to_git: false, useEmptyToken: analysisResult.is_public });
+      }
+    } else {
+      // --- Otherwise, run the analysis ---
+      handleAnalyzeRepo();
+    }
+  };
+
+  const handleAnalyzeRepo = async () => {
     setLoading(true);
     setError('');
     setSuccess('');
 
     try {
-      const response = await axios.post(`${backendUrl}/deployments/analyze`, { 
+      const response = await axios.post(`${backendUrl}/deployments/analyze`, {
         repo_url: repoUrl,
-        pat_token: patToken 
+        pat_token: patToken
       });
       const analysis = response.data;
-      setAnalysisResult(analysis); // Store the analysis result
+      setAnalysisResult(analysis);
+      setAnalysisComplete(true); // --- FIX: Mark analysis as complete
 
-      if (!analysis.is_public) { // Private Repo Logic
+      if (!analysis.is_public) {
         if (!patToken) {
-          setError("The link is invalid or this is a private repository. A PAT token is required.");
+          setError("This is a private repository. A PAT token is required.");
+          setAnalysisComplete(false); // Analysis is not successfully complete
+        } else if (analysis.push_required) {
+          setModalType('private-push-required');
         } else {
-          if (analysis.push_required) {
-            setModalType('private-push-required');
-          } else {
-            setModalType('no-changes-needed');
-          }
+          setModalType('no-changes-needed');
         }
-      } else { // Public Repo Logic
+      } else {
         if (analysis.push_required) {
-          if (!patToken) {
-            setModalType('public-push-required');
-          } else {
-            handleFinalSubmit({ push_to_git: true });
-          }
+          setModalType('public-push-required');
         } else {
           setModalType('no-changes-needed');
         }
@@ -69,6 +89,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
 
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to analyze repository.');
+      setAnalysisComplete(false); // Reset on error
     } finally {
       setLoading(false);
     }
@@ -82,15 +103,12 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
     const finalPatToken = useEmptyToken ? '' : patToken;
 
     try {
-      await axios.post(
-        `${backendUrl}/deployments`,
-        { 
-          repo_url: repoUrl, 
-          deployment_name: deploymentName, 
-          pat_token: finalPatToken,
-          push_to_git: push_to_git
-        }
-      );
+      await axios.post(`${backendUrl}/deployments`, {
+        repo_url: repoUrl,
+        deployment_name: deploymentName,
+        pat_token: finalPatToken,
+        push_to_git: push_to_git
+      });
       setSuccess(`Deployment '${deploymentName}' created successfully!`);
       resetForm();
       onDeploymentCreated();
@@ -100,7 +118,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
       setLoading(false);
     }
   };
-  
+
   const handleCloseModalAndFocus = () => {
     setModalType(null);
     setTimeout(() => {
@@ -108,13 +126,15 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
     }, 100);
   }
 
+  const buttonText = analysisComplete ? 'Create Deployment' : 'Analyze & Create';
+
   return (
     <>
       <Paper elevation={3} sx={{ p: 3, borderRadius: 2, width: '100%', maxWidth: '600px', mb: 4 }}>
         <Typography variant="h5" gutterBottom align="center" fontWeight="bold">
           Create New Deployment
         </Typography>
-        <Box component="form" onSubmit={handleAnalyzeRepo} display="flex" flexDirection="column" gap={2.5}>
+        <Box component="form" onSubmit={handleFormSubmit} display="flex" flexDirection="column" gap={2.5}>
           <TextField
             label="Custom Deployment Name"
             placeholder="my-production-api"
@@ -137,7 +157,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
           <TextField
             inputRef={patInputRef}
             type={showPatToken ? 'text' : 'password'}
-            label="GitHub PAT (Required for private repos)"
+            label="GitHub PAT (for private repos or push access)"
             value={patToken}
             onChange={(e) => setPatToken(e.target.value)}
             fullWidth
@@ -152,7 +172,7 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
               ),
             }}
           />
-          
+
           {error && <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert>}
           {success && <Alert severity="success" sx={{ mt: 1 }}>{success}</Alert>}
 
@@ -164,64 +184,57 @@ export default function CreateDeploymentForm({ backendUrl, onDeploymentCreated }
             startIcon={loading ? <CircularProgress size={20} color="inherit" /> : <AddCircleOutlineIcon />}
             sx={{ mt: 2, py: 1.5, fontWeight: 'bold' }}
           >
-            {loading ? 'Analyzing...' : 'Analyze & Create Deployment'}
+            {loading ? 'Processing...' : buttonText}
           </Button>
         </Box>
       </Paper>
 
-      {/* Modal for PUBLIC repos when push is required */}
+      {/* MODALS */}
       <Dialog open={modalType === 'public-push-required'} onClose={() => setModalType(null)}>
         <DialogTitle>Instrumentation Changes Required</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            This public repository's manifests need updates. To save these changes to GitHub, please provide a PAT token in the main form.
+            This public repository needs updates. To save these changes to GitHub, provide a PAT token and click "Create Deployment" again.
             <br/><br/>
-            Alternatively, you can proceed without pushing the changes to your repository.
+            Or, proceed without pushing the changes to your repo.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => handleFinalSubmit({ push_to_git: false })}>Proceed without Pushing</Button>
+          <Button onClick={() => handleFinalSubmit({ push_to_git: false, useEmptyToken: true })}>Proceed without Pushing</Button>
           <Button onClick={handleCloseModalAndFocus} variant="contained">
             OK, I'll add a PAT
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Modal for PRIVATE repos when push is required */}
       <Dialog open={modalType === 'private-push-required'} onClose={() => setModalType(null)}>
         <DialogTitle>Confirm Push to Private Repository</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            This private repository's manifests need updates for instrumentation. Do you want to push these changes to your repository?
+            This private repository needs updates. Do you want to push these changes?
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => handleFinalSubmit({ push_to_git: false })}>No, Proceed without Pushing</Button>
+          <Button onClick={() => handleFinalSubmit({ push_to_git: false })}>No, Don't Push</Button>
           <Button onClick={() => handleFinalSubmit({ push_to_git: true })} variant="contained">
             Yes, Push Changes
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Modal for when no changes are needed (works for public and private) */}
       <Dialog open={modalType === 'no-changes-needed'} onClose={() => setModalType(null)}>
         <DialogTitle>Manifests Already Instrumented</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            This repository's manifests are already up-to-date. A Git push will not be performed.
+            No changes are needed. A Git push is not required.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button 
-            onClick={() => {
-              // Check if the repo was public. If so, we can discard the token.
-              // If it was private, we must keep the token for cloning.
-              const isPublicRepo = analysisResult ? analysisResult.is_public : false;
-              handleFinalSubmit({ push_to_git: false, useEmptyToken: isPublicRepo });
-            }} 
+          <Button
+            onClick={() => handleFinalSubmit({ push_to_git: false, useEmptyToken: analysisResult.is_public })}
             variant="contained"
           >
-            Proceed
+            Proceed to Deploy
           </Button>
         </DialogActions>
       </Dialog>
