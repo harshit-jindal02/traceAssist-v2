@@ -1,112 +1,127 @@
-# TraceAssist: Automated Observability for Kubernetes
+# TraceAssist Instrumentation Service (Backend)
 
-**TraceAssist is a powerful automation tool for SREs and DevOps engineers designed to dramatically simplify the process of instrumenting and deploying applications into a Kubernetes environment.**
-
-Gone are the days of manually creating Dockerfiles, wrestling with Kubernetes manifests, and figuring out how to inject observability. TraceAssist takes your existing application source code from a Git repository, intelligently modifies its deployment configurations for auto-instrumentation with OpenTelemetry, and deploys it to a local Minikube cluster—all through a simple web interface.
+This repository contains the backend service for TraceAssist, a powerful API that automatically instruments Kubernetes manifests for OpenTelemetry. This service is designed to be deployed to a Kubernetes cluster and consumed by the public `traceassist-action` GitHub Action.
 
 ---
 
-## ✨ Core Features
+## 🏛️ Architecture
 
-* **Git-Powered Workflow**: Simply provide a URL to a public or private GitHub repository.
-* **Bring Your Own Config**: Uses your application's own `Dockerfile` and `deployment.yaml` files, adapting to your existing setup.
-* **Intelligent Manifest Modification**: Automatically injects the necessary OpenTelemetry annotations and a `serviceAccountName` into your Kubernetes `Deployment` manifests for seamless instrumentation.
-* **Persistent Deployment History**: All deployment activities are logged in a PostgreSQL database, providing a complete history of instrumented applications directly in the UI.
-* **Local-First Environment**: Deploys everything to a local Minikube cluster, perfect for safe and rapid development and testing.
-* **Automated Setup & Cleanup**: Comes with simple `run.sh` and `cleanup.sh` scripts to build, deploy, and tear down the entire environment with single commands.
+This service is a **FastAPI** application that provides a single, critical API endpoint:
 
----
+* **`POST /workflow/instrument`**: Receives the raw text content of a Kubernetes manifest, intelligently injects the necessary annotations for OpenTelemetry auto-instrumentation, and returns the modified manifest content.
 
-## 🛠️ Tech Stack
-
-* **Frontend**: React, Material-UI, Axios
-* **Backend**: Python 3.10, FastAPI, SQLAlchemy
-* **Database**: PostgreSQL
-* **Orchestration**: Kubernetes (Minikube), Docker, Docker Compose
-* **Observability**: OpenTelemetry Operator
+The service is stateless by design, but it requires a **PostgreSQL** database for potential future features like API key management, client tracking, or usage metrics.
 
 ---
 
-## ⚙️ How It Works
+## 🚀 Deployment
 
-TraceAssist follows a simple, automated workflow:
-
-1.  **Input**: A user provides a Git repository URL, a unique deployment name, and an optional GitHub PAT for private repos.
-2.  **Clone & Record**: The backend clones the repository and creates a record of the deployment in the PostgreSQL database.
-3.  **Build**: It finds the `Dockerfile` in the user's repo and builds a new Docker image, tagging it with the unique deployment name.
-4.  **Analyze & Modify**: The backend locates the Kubernetes manifest files (`*.yaml`) in the repository. It intelligently parses these files to:
-    * Rename the `Deployment` and `Service` resources to match the user's unique deployment name.
-    * Update all necessary labels and selectors.
-    * Inject the correct Docker image name and set `imagePullPolicy: Never`.
-    * Inject the `serviceAccountName: traceassist-sa` for RBAC permissions.
-    * Inject the OpenTelemetry annotations (`instrumentation.opentelemetry.io/inject: "true"`) into the pod template.
-5.  **Deploy**: The modified manifests are applied to the `traceassist` namespace in the Minikube cluster.
-6.  **Instrument**: The OpenTelemetry Operator detects the annotations and automatically injects the instrumentation sidecar into the application's pods as they start.
-
----
-
-## 🚀 Getting Started
-
-Follow these steps to get TraceAssist running on your local machine.
+This service is designed to be deployed as a container in a Kubernetes cluster.
 
 ### Prerequisites
 
-Ensure you have the following tools installed:
-* Docker & Docker Compose
-* Minikube
-* `kubectl` (Kubernetes CLI)
-* Helm (Kubernetes Package Manager)
+* A running Kubernetes cluster (e.g., GKE, EKS, AKS).
+* `kubectl` configured to connect to your cluster.
+* A running PostgreSQL database accessible from the cluster.
+* An Ingress controller (like NGINX) to expose the service to the internet.
 
-### Setup Instructions
+### Setup and Deployment Steps
 
-1.  **Clone the Repository**
-    ```bash
-    git clone <your-repo-url>
-    cd traceAssist
+1.  **Build the Docker Image**
+    From the root of this repository, build the Docker image and push it to a container registry (e.g., Docker Hub, GCR, GHCR).
+    ```sh
+    docker build -t your-registry/traceassist-backend:latest ./backend
+    docker push your-registry/traceassist-backend:latest
     ```
 
-2.  **Start the Local PostgreSQL Database**
-    This command will start a PostgreSQL container in the background.
-    ```bash
-    docker-compose up -d
-    ```
-
-3.  **Configure Secrets**
-    You need to provide credentials for your database and GitHub.
-    * **PostgreSQL**: Open `k8s/postgres-secret.yaml` and ensure the `DATABASE_URL` matches the credentials in your `docker-compose.yaml` file. For Docker Desktop on Mac/Windows, `host.docker.internal` is the correct hostname.
+2.  **Configure Secrets**
+    You must create a Kubernetes secret to hold the database connection string.
+    * Create a file named `postgres-secret.yaml`:
         ```yaml
-        # k8s/postgres-secret.yaml
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: postgres-secret
+          namespace: traceassist # Or your desired namespace
+        type: Opaque
         stringData:
-          DATABASE_URL: "postgresql://traceassist_user:your_strong_password@host.docker.internal:5432/traceassist_db"
+          DATABASE_URL: "postgresql://USER:PASSWORD@HOST:PORT/DATABASE"
         ```
-    * **GitHub PAT**: Open `k8s/backend-secret.yaml` and paste your GitHub Personal Access Token. This is required for cloning private repositories and avoiding rate limits on public ones.
-        ```yaml
-        # k8s/backend-secret.yaml
-        stringData:
-          PAT_TOKEN: "<your_github_pat>"
+    * Apply the secret to your cluster:
+        ```sh
+        kubectl apply -f postgres-secret.yaml
         ```
 
-4.  **Run the Deployment Script**
-    This script will build all the necessary images, set up the Kubernetes cluster, and deploy TraceAssist.
-    ```bash
-    ./run.sh
-    ```
+3.  **Deploy the Backend Service**
+    * Modify the `k8s/backend-deployment.yaml` file to use the correct image from your container registry.
+    * Apply the deployment and service manifests:
+        ```sh
+        kubectl apply -f ./k8s/backend-deployment.yaml
+        kubectl apply -f ./k8s/backend-service.yaml
+        ```
 
-5.  **Access the Application**
-    Once the script finishes, it will provide the URL to access the TraceAssist UI.
-    ```
-    ✅ All components are up and port-forwarding is active.
-    🔗 Access the TraceAssist UI at:
-       http://localhost:5173
-    ```
-    Open `http://localhost:5173` in your browser to start using the application.
+4.  **Expose the Service**
+    Create an Ingress resource to expose the `traceassist-backend` service to the internet with a stable hostname (e.g., `api.traceassist.io`). This will be the URL that your clients use in the GitHub Action.
+
+    * Create a file named `ingress.yaml`:
+        ```yaml
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: traceassist-ingress
+          namespace: traceassist
+        spec:
+          rules:
+          - host: api.your-traceassist-service.com
+            http:
+              paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: traceassist-backend
+                    port:
+                      number: 8000
+        ```
+    * Apply the Ingress to your cluster:
+        ```sh
+        kubectl apply -f ingress.yaml
+        ```
 
 ---
 
-## 🧹 Cleanup
+## 🔧 Local Development
 
-To stop the application and remove all created resources (Kubernetes deployments, Docker images, etc.), simply run the cleanup script:
+For local development and testing, you can use the provided `docker-compose.yaml` file to quickly spin up a PostgreSQL database.
 
-```bash
-./cleanup.sh
-To stop the PostgreSQL container, run:docker-compose down
+1.  **Start the Database**:
+    ```sh
+    docker-compose up -d
+    ```
+
+2.  **Set Environment Variables**:
+    Create a `.env` file in the `backend/` directory with the `DATABASE_URL`:
+    ```
+    DATABASE_URL="postgresql://traceassist_user:your_strong_password@localhost:5432/traceassist_db"
+    ```
+
+3.  **Run the FastAPI Server**:
+    ```sh
+    cd backend/
+    uvicorn main:app --reload
+    ```
+    The API will be available at `http://localhost:8000`.
+
+---
+
+## API Endpoints
+
+* **`POST /workflow/instrument`**: Instruments a Kubernetes manifest.
+* **`GET /health`**: A simple health check endpoint that returns `{"status": "ok"}`.
+
+
+
+
+
+
+Okay can you also make one readme file for my priv traceAssist code! also i need raw format for it! in canvas ensure -> sing type="text/markdown" was causing the canvas to render the content instead of showing you the raw source. I will now use type="code" to ensure it displays correctly as a raw text block.
